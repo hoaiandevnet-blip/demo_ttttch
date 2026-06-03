@@ -1,0 +1,1376 @@
+import 'dotenv/config';
+import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { pool, query } from './db.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const appRoot = path.resolve(__dirname, '..');
+const app = express();
+const port = Number(process.env.PORT || 3000);
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.static(appRoot));
+
+const asyncHandler = (handler) => (req, res, next) => {
+  Promise.resolve(handler(req, res, next)).catch(next);
+};
+
+function toDbDate(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  const vnDate = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (vnDate) return `${vnDate[3]}-${vnDate[2]}-${vnDate[1]}`;
+  const isoDate = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoDate) return `${isoDate[1]}-${isoDate[2]}-${isoDate[3]}`;
+  return null;
+}
+
+function toNullableText(value) {
+  const text = String(value ?? '').trim();
+  return text || null;
+}
+
+function getActor(req) {
+  return String(req.get('x-actor') || req.body?.actor || req.query?.actor || 'system').trim() || 'system';
+}
+
+function getClientIp(req) {
+  return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
+}
+
+async function logActivity(req, {
+  action,
+  moduleKey = null,
+  moduleName = null,
+  detail = '',
+  metadata = {}
+}, client = pool) {
+  if (!action) return;
+  const actor = getActor(req);
+  await client.query(`
+    insert into activity_logs (actor_username, action, module_key, module_name, detail, metadata, ip_address, user_agent)
+    values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+  `, [
+    actor,
+    action,
+    moduleKey,
+    moduleName,
+    detail,
+    JSON.stringify(metadata || {}),
+    getClientIp(req),
+    req.get('user-agent') || ''
+  ]);
+}
+
+function csvEscape(value) {
+  const text = String(value ?? '');
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+async function ensureSchema() {
+  await pool.query(`
+    create table if not exists activity_logs (
+      id bigserial primary key,
+      actor_username text not null default 'system',
+      action text not null,
+      module_key text,
+      module_name text,
+      detail text,
+      metadata jsonb not null default '{}'::jsonb,
+      ip_address text,
+      user_agent text,
+      created_at timestamptz not null default now()
+    )
+  `);
+  await pool.query('create index if not exists idx_activity_logs_created_at on activity_logs (created_at desc)');
+  await pool.query('create index if not exists idx_activity_logs_actor on activity_logs (actor_username)');
+  await pool.query(`
+    alter table users
+    add column if not exists is_deleted boolean not null default false
+  `);
+  await pool.query(`
+    update users
+    set is_deleted = false
+    where is_deleted is null
+  `);
+  await pool.query(`
+    update modules
+    set
+      name = 'Quản lý cán bộ',
+      description = 'Quản lý cán bộ theo đội, xem số hiệu, số điện thoại và hồ sơ chi tiết'
+    where module_key = 'staffDirectory'
+  `);
+  await pool.query(`
+    update modules
+    set
+      module_key = 'teamManager',
+      name = 'Quản lý đội',
+      description = 'Thêm, sửa, xóa đội trực thuộc Phòng PV01',
+      icon = 'users-round',
+      visible = true,
+      is_admin_only = true,
+      is_custom = false
+    where module_key = 'quan-ly-doi'
+      and not exists (select 1 from modules where module_key = 'teamManager')
+  `);
+  await pool.query(`
+    insert into modules (module_key, name, description, icon, visible, is_admin_only, is_custom)
+    values ('teamManager', 'Quản lý đội', 'Thêm, sửa, xóa đội trực thuộc Phòng PV01', 'users-round', true, true, false)
+    on conflict (module_key) do update
+    set
+      name = excluded.name,
+      description = excluded.description,
+      icon = excluded.icon,
+      is_admin_only = excluded.is_admin_only
+  `);
+  await pool.query(`
+    insert into modules (module_key, name, description, icon, visible, is_admin_only, is_custom)
+    values ('settings', 'Cài đặt', 'Tùy biến chế độ hiển thị, màu nhấn và mật độ giao diện', 'settings', true, false, false)
+    on conflict (module_key) do update
+    set
+      name = excluded.name,
+      description = excluded.description,
+      icon = excluded.icon,
+      visible = excluded.visible,
+      is_admin_only = excluded.is_admin_only,
+      is_custom = excluded.is_custom
+  `);
+  await pool.query(`
+    insert into modules (module_key, name, description, icon, visible, is_admin_only, is_custom)
+    values ('activityLog', 'Log lịch sử', 'Theo dõi toàn bộ quá trình sử dụng và thay đổi dữ liệu của tài khoản', 'history', true, true, false)
+    on conflict (module_key) do update
+    set
+      name = excluded.name,
+      description = excluded.description,
+      icon = excluded.icon,
+      visible = excluded.visible,
+      is_admin_only = excluded.is_admin_only,
+      is_custom = excluded.is_custom
+  `);
+  await pool.query(`
+    update permissions
+    set name = 'Quản lý đội'
+    where name = 'Quản lý quản lý đội'
+      and not exists (select 1 from permissions where name = 'Quản lý đội')
+  `);
+  await pool.query(`
+    insert into permissions (module_id, name)
+    select id, 'Quản lý đội'
+    from modules
+    where module_key = 'teamManager'
+    on conflict (name) do update
+    set module_id = excluded.module_id
+  `);
+  await pool.query(`
+    insert into permissions (module_id, name)
+    select m.id, v.permission_name
+    from (
+      values
+        ('staffDirectory', 'Quản lý cán bộ'),
+        ('catalogManager', 'Quản lý danh mục'),
+        ('moduleManager', 'Quản lý module'),
+        ('assetCategoryManager', 'Quản lý danh mục tài sản'),
+        ('reports', 'Báo cáo thống kê'),
+        ('settings', 'Cài đặt giao diện'),
+        ('activityLog', 'Log lịch sử')
+    ) as v(module_key, permission_name)
+    join modules m on m.module_key = v.module_key
+    on conflict (name) do update
+    set module_id = excluded.module_id
+  `);
+}
+
+app.get('/api/health', asyncHandler(async (_req, res) => {
+  const [row] = await query('select now() as db_time');
+  res.json({ ok: true, dbTime: row.db_time });
+}));
+
+app.get('/api/activity-logs', asyncHandler(async (req, res) => {
+  if (getActor(req) !== 'admin') {
+    res.status(403).json({ error: 'Chỉ Admin được xem log lịch sử' });
+    return;
+  }
+  const {
+    username = '',
+    moduleKey = '',
+    action = '',
+    q = '',
+    dateFrom = '',
+    dateTo = '',
+    limit = '300'
+  } = req.query;
+  const where = [];
+  const params = [];
+  const add = (sql, value) => {
+    params.push(value);
+    where.push(sql.replace('?', `$${params.length}`));
+  };
+  if (username) add('actor_username = ?', username);
+  if (moduleKey) add('module_key = ?', moduleKey);
+  if (action) add('action = ?', action);
+  if (dateFrom) add('created_at >= ?::date', dateFrom);
+  if (dateTo) add('created_at < (?::date + interval \'1 day\')', dateTo);
+  if (q) {
+    params.push(`%${q}%`);
+    where.push(`(actor_username ilike $${params.length} or action ilike $${params.length} or coalesce(module_name, '') ilike $${params.length} or coalesce(detail, '') ilike $${params.length})`);
+  }
+  const maxRows = Math.min(Math.max(Number(limit) || 300, 1), 2000);
+  params.push(maxRows);
+  const rows = await query(`
+    select id, actor_username, action, module_key, module_name, detail, metadata, ip_address, user_agent, created_at
+    from activity_logs
+    ${where.length ? `where ${where.join(' and ')}` : ''}
+    order by created_at desc, id desc
+    limit $${params.length}
+  `, params);
+  res.json(rows);
+}));
+
+app.post('/api/activity-logs', asyncHandler(async (req, res) => {
+  await logActivity(req, {
+    action: String(req.body?.action || '').trim(),
+    moduleKey: req.body?.moduleKey || null,
+    moduleName: req.body?.moduleName || null,
+    detail: req.body?.detail || '',
+    metadata: req.body?.metadata || {}
+  });
+  res.status(201).json({ ok: true });
+}));
+
+app.get('/api/activity-logs/export', asyncHandler(async (req, res) => {
+  if (getActor(req) !== 'admin') {
+    res.status(403).send('Chỉ Admin được xuất log lịch sử');
+    return;
+  }
+  const rows = await query(`
+    select actor_username, action, coalesce(module_name, module_key, '') as module_name, detail, created_at, ip_address
+    from activity_logs
+    order by created_at desc, id desc
+    limit 5000
+  `);
+  const header = ['Thời gian', 'Tài khoản', 'Hành động', 'Module', 'Chi tiết', 'IP'];
+  const lines = [
+    header.map(csvEscape).join(','),
+    ...rows.map((row) => [
+      new Date(row.created_at).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
+      row.actor_username,
+      row.action,
+      row.module_name,
+      row.detail,
+      row.ip_address
+    ].map(csvEscape).join(','))
+  ];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="log-lich-su-ttttch.csv"');
+  res.send(`\uFEFF${lines.join('\n')}`);
+}));
+
+app.get('/api/accounts', asyncHandler(async (_req, res) => {
+  const rows = await query(`
+    select
+      u.id,
+      u.username,
+      u.password_hash as password,
+      u.full_name,
+      u.phone,
+      coalesce(r.name, '') as rank,
+      coalesce(p.name, '') as position,
+      coalesce(t.name, '') as team,
+      u.role_name,
+      u.status,
+      u.is_admin,
+      u.is_deleted
+    from users u
+    left join ranks r on r.id = u.rank_id
+    left join positions p on p.id = u.position_id
+    left join teams t on t.id = u.team_id
+    where u.is_deleted = false
+    order by u.is_admin desc, u.id
+  `);
+  res.json(rows);
+}));
+
+async function findCatalogId(client, table, name) {
+  if (!name) return null;
+  const result = await client.query(`select id from ${table} where name = $1`, [name]);
+  return result.rows[0]?.id || null;
+}
+
+async function ensureNamedId(client, table, name) {
+  const cleanName = String(name || '').trim();
+  if (!cleanName) return null;
+  const existing = await client.query(`select id from ${table} where name = $1`, [cleanName]);
+  if (existing.rows[0]?.id) return existing.rows[0].id;
+  const inserted = await client.query(
+    `insert into ${table} (name) values ($1) on conflict (name) do update set name = excluded.name returning id`,
+    [cleanName]
+  );
+  return inserted.rows[0]?.id || null;
+}
+
+async function findUserIdByName(client, value) {
+  const cleanValue = String(value || '').trim();
+  if (!cleanValue) return null;
+  const result = await client.query(
+    `select id from users where is_deleted = false and is_admin = false and (full_name = $1 or username = $1) limit 1`,
+    [cleanValue]
+  );
+  return result.rows[0]?.id || null;
+}
+
+function normalizeAssetDate(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  const vn = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (vn) return `${vn[3]}-${vn[2]}-${vn[1]}`;
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return iso ? `${iso[1]}-${iso[2]}-${iso[3]}` : null;
+}
+
+function normalizeAssetStatusValue(value) {
+  const text = String(value || '').trim();
+  return ['Đang sử dụng', 'Bảo trì', 'Hư', 'Tạm dừng'].includes(text) ? text : 'Đang sử dụng';
+}
+
+async function buildAssetPayload(client, body) {
+  const assetCode = String(body.id || body.assetCode || body.asset_code || '').trim();
+  const name = String(body.name || '').trim();
+  if (!assetCode || !name) {
+    return { error: 'Thiếu mã tài sản hoặc tên tài sản' };
+  }
+  return {
+    assetCode,
+    name,
+    categoryId: await ensureNamedId(client, 'asset_categories', body.type || body.category),
+    receivedDate: normalizeAssetDate(body.date || body.receivedDate || body.received_date),
+    managerUserId: await findUserIdByName(client, body.owner || body.manager),
+    teamId: await ensureNamedId(client, 'teams', body.unit || body.team),
+    status: normalizeAssetStatusValue(body.status),
+    originalValue: body.value || body.originalValue || body.original_value || null,
+    note: body.note || null
+  };
+}
+
+app.post('/api/accounts', asyncHandler(async (req, res) => {
+  const {
+    username,
+    password,
+    fullname,
+    phone = '',
+    rank = '',
+    position = '',
+    team = '',
+    status = 'Hoạt động'
+  } = req.body;
+
+  if (!username || !password || !fullname) {
+    res.status(400).json({ error: 'Thiếu tên đăng nhập, mật khẩu hoặc họ tên' });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const rankId = await findCatalogId(client, 'ranks', rank);
+    const positionId = await findCatalogId(client, 'positions', position);
+    const teamId = await findCatalogId(client, 'teams', team);
+    const inserted = await client.query(`
+      insert into users (username, password_hash, full_name, phone, rank_id, position_id, team_id, role_name, status, is_admin)
+      values ($1, $2, $3, $4, $5, $6, $7, 'Cán bộ nghiệp vụ', $8, false)
+      returning id
+    `, [
+      username.trim(),
+      password,
+      fullname.trim(),
+      phone || null,
+      rankId,
+      positionId,
+      teamId,
+      status === 'Tạm khóa' ? 'Tạm khóa' : 'Hoạt động'
+    ]);
+    await client.query(`
+      insert into staff_profiles (user_id)
+      values ($1)
+      on conflict (user_id) do nothing
+    `, [inserted.rows[0].id]);
+    await logActivity(req, {
+      action: 'Tạo tài khoản',
+      moduleKey: 'permissions',
+      moduleName: 'Hệ thống & Phân quyền',
+      detail: `Tạo tài khoản ${username.trim()}`,
+      metadata: { username: username.trim(), fullname: fullname.trim(), team, rank, position }
+    }, client);
+    await client.query('commit');
+    res.status(201).json({ ok: true, id: inserted.rows[0].id });
+  } catch (error) {
+    await client.query('rollback');
+    if (error.code === '23505') {
+      res.status(409).json({ error: 'Tên đăng nhập đã tồn tại' });
+      return;
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+app.put('/api/accounts/:username', asyncHandler(async (req, res) => {
+  const { username } = req.params;
+  const {
+    password,
+    fullname,
+    phone = '',
+    rank = '',
+    position = '',
+    team = '',
+    status = 'Hoạt động'
+  } = req.body;
+
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const current = await client.query('select id, is_admin from users where username = $1 and is_deleted = false', [username]);
+    if (!current.rows.length) {
+      await client.query('rollback');
+      res.status(404).json({ error: 'Không tìm thấy tài khoản' });
+      return;
+    }
+    const user = current.rows[0];
+    const rankId = user.is_admin ? null : await findCatalogId(client, 'ranks', rank);
+    const positionId = user.is_admin ? null : await findCatalogId(client, 'positions', position);
+    const teamId = user.is_admin ? null : await findCatalogId(client, 'teams', team);
+    await client.query(`
+      update users
+      set
+        password_hash = $2,
+        full_name = $3,
+        phone = $4,
+        rank_id = $5,
+        position_id = $6,
+        team_id = $7,
+        status = $8,
+        updated_at = now()
+      where username = $1
+    `, [
+      username,
+      password,
+      fullname?.trim() || (user.is_admin ? 'Admin' : username),
+      user.is_admin ? null : phone || null,
+      rankId,
+      positionId,
+      teamId,
+      user.is_admin ? 'Hoạt động' : (status === 'Tạm khóa' ? 'Tạm khóa' : 'Hoạt động')
+    ]);
+    if (!user.is_admin) {
+      await client.query(`
+        insert into staff_profiles (user_id)
+        values ($1)
+        on conflict (user_id) do nothing
+      `, [user.id]);
+    }
+    await logActivity(req, {
+      action: 'Cập nhật tài khoản',
+      moduleKey: 'permissions',
+      moduleName: 'Hệ thống & Phân quyền',
+      detail: `Cập nhật tài khoản ${username}`,
+      metadata: { username, fullname, phone, rank, position, team, status }
+    }, client);
+    await client.query('commit');
+    res.json({ ok: true });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+app.delete('/api/accounts', asyncHandler(async (req, res) => {
+  const usernames = Array.isArray(req.body?.usernames) ? req.body.usernames : [];
+  const filtered = usernames.map((item) => String(item).trim()).filter((item) => item && item !== 'admin');
+  if (!filtered.length) {
+    res.status(400).json({ error: 'Chưa chọn tài khoản hợp lệ để xóa' });
+    return;
+  }
+  const result = await pool.query(
+    `
+      update users
+      set is_deleted = true, updated_at = now()
+      where username = any($1::text[])
+        and is_admin = false
+        and is_deleted = false
+      returning username
+    `,
+    [filtered]
+  );
+  await logActivity(req, {
+    action: 'Xóa tài khoản',
+    moduleKey: 'permissions',
+    moduleName: 'Hệ thống & Phân quyền',
+    detail: `Xóa mềm ${result.rows.length} tài khoản`,
+    metadata: { usernames: result.rows.map((row) => row.username) }
+  });
+  res.json({ ok: true, deleted: result.rows.map((row) => row.username) });
+}));
+
+app.get('/api/modules', asyncHandler(async (_req, res) => {
+  const rows = await query(`
+    select id, module_key, name, description, icon, visible, is_admin_only, is_custom
+    from modules
+    order by id
+  `);
+  res.json(rows);
+}));
+
+app.post('/api/modules', asyncHandler(async (req, res) => {
+  const {
+    moduleKey,
+    name,
+    description = '',
+    icon = 'blocks',
+    visible = true,
+    isAdminOnly = false
+  } = req.body;
+  if (!moduleKey || !name) {
+    res.status(400).json({ error: 'Thiếu mã module hoặc tên module' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const permissionName = String(name).trim().toLowerCase().startsWith('quản lý')
+      ? String(name).trim()
+      : `Quản lý ${String(name).toLowerCase()}`;
+    const inserted = await client.query(`
+      insert into modules (module_key, name, description, icon, visible, is_admin_only, is_custom)
+      values ($1, $2, $3, $4, $5, $6, true)
+      returning id, module_key
+    `, [moduleKey, name, description, icon, Boolean(visible), Boolean(isAdminOnly)]);
+    await client.query(`
+      insert into permissions (module_id, name)
+      values ($1, $2)
+      on conflict (name) do nothing
+    `, [inserted.rows[0].id, permissionName]);
+    await logActivity(req, {
+      action: 'Tạo module',
+      moduleKey: 'moduleManager',
+      moduleName: 'Quản lý module',
+      detail: `Tạo module ${name}`,
+      metadata: { moduleKey, name, description, icon, visible, isAdminOnly }
+    }, client);
+    await client.query('commit');
+    res.status(201).json({ ok: true, moduleKey: inserted.rows[0].module_key });
+  } catch (error) {
+    await client.query('rollback');
+    if (error.code === '23505') {
+      res.status(409).json({ error: 'Module đã tồn tại' });
+      return;
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+app.put('/api/modules/:moduleKey', asyncHandler(async (req, res) => {
+  const { moduleKey } = req.params;
+  const { name, description, visible, icon } = req.body;
+  const result = await pool.query(`
+    update modules
+    set
+      name = coalesce($2, name),
+      description = coalesce($3, description),
+      icon = coalesce($4, icon),
+      visible = coalesce($5, visible)
+    where module_key = $1
+    returning module_key
+  `, [
+    moduleKey,
+    name ?? null,
+    description ?? null,
+    icon ?? null,
+    typeof visible === 'boolean' ? visible : null
+  ]);
+  if (!result.rows.length) {
+    res.status(404).json({ error: 'Không tìm thấy module' });
+    return;
+  }
+  await logActivity(req, {
+    action: 'Cập nhật module',
+    moduleKey: 'moduleManager',
+    moduleName: 'Quản lý module',
+    detail: `Cập nhật module ${moduleKey}`,
+    metadata: { moduleKey, name, description, visible, icon }
+  });
+  res.json({ ok: true });
+}));
+
+app.delete('/api/modules/:moduleKey', asyncHandler(async (req, res) => {
+  const { moduleKey } = req.params;
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const moduleResult = await client.query('select id from modules where module_key = $1', [moduleKey]);
+    if (!moduleResult.rows.length) {
+      await client.query('rollback');
+      res.status(404).json({ error: 'Không tìm thấy module' });
+      return;
+    }
+    await client.query('delete from permissions where module_id = $1', [moduleResult.rows[0].id]);
+    await client.query('delete from modules where id = $1', [moduleResult.rows[0].id]);
+    await logActivity(req, {
+      action: 'Xóa module',
+      moduleKey: 'moduleManager',
+      moduleName: 'Quản lý module',
+      detail: `Xóa module ${moduleKey}`,
+      metadata: { moduleKey }
+    }, client);
+    await client.query('commit');
+    res.json({ ok: true });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+app.get('/api/permissions', asyncHandler(async (_req, res) => {
+  const rows = await query(`
+    select
+      p.id,
+      p.name,
+      m.module_key
+    from permissions p
+    left join modules m on m.id = p.module_id
+    order by p.id
+  `);
+  res.json(rows);
+}));
+
+app.delete('/api/permissions/:name', asyncHandler(async (req, res) => {
+  const name = req.params.name;
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const permissionResult = await client.query('select id from permissions where name = $1', [name]);
+    if (!permissionResult.rows.length) {
+      await client.query('rollback');
+      res.status(404).json({ error: 'Không tìm thấy quyền' });
+      return;
+    }
+    await client.query('delete from user_permissions where permission_id = $1', [permissionResult.rows[0].id]);
+    await client.query('delete from permissions where id = $1', [permissionResult.rows[0].id]);
+    await logActivity(req, {
+      action: 'Xóa quyền',
+      moduleKey: 'permissions',
+      moduleName: 'Hệ thống & Phân quyền',
+      detail: `Xóa quyền ${name}`,
+      metadata: { permission: name }
+    }, client);
+    await client.query('commit');
+    res.json({ ok: true });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+app.get('/api/user-permissions', asyncHandler(async (_req, res) => {
+  const rows = await query(`
+    select u.username, p.name as permission_name
+    from users u
+    left join user_permissions up on up.user_id = u.id
+    left join permissions p on p.id = up.permission_id
+    where u.is_deleted = false
+    order by u.id, p.id
+  `);
+  const result = {};
+  for (const row of rows) {
+    if (!result[row.username]) result[row.username] = [];
+    if (row.permission_name) result[row.username].push(row.permission_name);
+  }
+  res.json(result);
+}));
+
+app.put('/api/user-permissions/:username', asyncHandler(async (req, res) => {
+  const { username } = req.params;
+  const permissions = Array.isArray(req.body?.permissions) ? req.body.permissions : [];
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const userResult = await client.query('select id from users where username = $1 and is_deleted = false', [username]);
+    if (!userResult.rows.length) {
+      await client.query('rollback');
+      res.status(404).json({ error: 'Không tìm thấy tài khoản' });
+      return;
+    }
+    await client.query('delete from user_permissions where user_id = $1', [userResult.rows[0].id]);
+    if (permissions.length) {
+      await client.query(`
+        insert into user_permissions (user_id, permission_id)
+        select $1, p.id
+        from permissions p
+        where p.name = any($2::text[])
+      `, [userResult.rows[0].id, permissions]);
+    }
+    await logActivity(req, {
+      action: 'Lưu phân quyền',
+      moduleKey: 'permissions',
+      moduleName: 'Hệ thống & Phân quyền',
+      detail: `Cập nhật ${permissions.length} quyền cho ${username}`,
+      metadata: { username, permissions }
+    }, client);
+    await client.query('commit');
+    res.json({ ok: true });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+app.get('/api/catalogs', asyncHandler(async (_req, res) => {
+  const [positions, ranks, teams] = await Promise.all([
+    query('select name from positions order by id'),
+    query('select name from ranks order by id'),
+    query('select name from teams order by id')
+  ]);
+  res.json({
+    positions: positions.map((row) => row.name),
+    ranks: ranks.map((row) => row.name),
+    teams: teams.map((row) => row.name)
+  });
+}));
+
+app.post('/api/catalogs/:type', asyncHandler(async (req, res) => {
+  const tableMap = {
+    positions: 'positions',
+    ranks: 'ranks'
+  };
+  const table = tableMap[req.params.type];
+  const name = String(req.body?.name || '').trim();
+  if (!table || !name) {
+    res.status(400).json({ error: 'Tên danh mục không hợp lệ' });
+    return;
+  }
+  try {
+    const result = await pool.query(`insert into ${table} (name) values ($1) returning name`, [name]);
+    await logActivity(req, {
+      action: 'Thêm danh mục',
+      moduleKey: 'catalogManager',
+      moduleName: 'Quản lý danh mục',
+      detail: `Thêm ${req.params.type === 'positions' ? 'chức vụ' : 'chức hàm'} ${name}`,
+      metadata: { type: req.params.type, name }
+    });
+    res.status(201).json({ ok: true, name: result.rows[0].name });
+  } catch (error) {
+    if (error.code === '23505') {
+      res.status(409).json({ error: 'Danh mục đã tồn tại' });
+      return;
+    }
+    throw error;
+  }
+}));
+
+app.put('/api/catalogs/:type/:oldName', asyncHandler(async (req, res) => {
+  const tableMap = {
+    positions: 'positions',
+    ranks: 'ranks'
+  };
+  const table = tableMap[req.params.type];
+  const oldName = req.params.oldName;
+  const name = String(req.body?.name || '').trim();
+  if (!table || !oldName || !name) {
+    res.status(400).json({ error: 'Danh mục cập nhật không hợp lệ' });
+    return;
+  }
+  try {
+    const result = await pool.query(`update ${table} set name = $2, updated_at = now() where name = $1 returning name`, [oldName, name]);
+    if (!result.rows.length) {
+      res.status(404).json({ error: 'Không tìm thấy danh mục' });
+      return;
+    }
+    await logActivity(req, {
+      action: 'Cập nhật danh mục',
+      moduleKey: 'catalogManager',
+      moduleName: 'Quản lý danh mục',
+      detail: `Đổi ${oldName} thành ${name}`,
+      metadata: { type: req.params.type, oldName, name }
+    });
+    res.json({ ok: true, name: result.rows[0].name });
+  } catch (error) {
+    if (error.code === '23505') {
+      res.status(409).json({ error: 'Danh mục đã tồn tại' });
+      return;
+    }
+    throw error;
+  }
+}));
+
+app.delete('/api/catalogs/:type', asyncHandler(async (req, res) => {
+  const tableMap = {
+    positions: 'positions',
+    ranks: 'ranks'
+  };
+  const table = tableMap[req.params.type];
+  const names = Array.isArray(req.body?.names) ? req.body.names.map((item) => String(item).trim()).filter(Boolean) : [];
+  if (!table || !names.length) {
+    res.status(400).json({ error: 'Danh mục xóa không hợp lệ' });
+    return;
+  }
+  const result = await pool.query(`delete from ${table} where name = any($1::text[]) returning name`, [names]);
+  await logActivity(req, {
+    action: 'Xóa danh mục',
+    moduleKey: 'catalogManager',
+    moduleName: 'Quản lý danh mục',
+    detail: `Xóa ${result.rows.length} danh mục`,
+    metadata: { type: req.params.type, names: result.rows.map((row) => row.name) }
+  });
+  res.json({ ok: true, deleted: result.rows.map((row) => row.name) });
+}));
+
+app.get('/api/teams', asyncHandler(async (_req, res) => {
+  const rows = await query(`
+    select
+      t.id,
+      t.name,
+      d.name as department,
+      count(distinct u.id)::int as staff_count,
+      count(distinct a.id)::int as asset_count
+    from teams t
+    left join departments d on d.id = t.department_id
+    left join users u on u.team_id = t.id and u.is_deleted = false
+    left join assets a on a.team_id = t.id
+    group by t.id, t.name, d.name
+    order by t.id
+  `);
+  res.json(rows);
+}));
+
+app.post('/api/teams', asyncHandler(async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  if (!name) {
+    res.status(400).json({ error: 'Tên đội không hợp lệ' });
+    return;
+  }
+  try {
+    const result = await pool.query(`
+      insert into teams (department_id, name)
+      values ((select id from departments where name = 'Phòng PV01' limit 1), $1)
+      returning id, name
+    `, [name]);
+    await logActivity(req, {
+      action: 'Thêm đội',
+      moduleKey: 'teamManager',
+      moduleName: 'Quản lý đội',
+      detail: `Thêm đội ${name}`,
+      metadata: { team: result.rows[0] }
+    });
+    res.status(201).json({ ok: true, team: result.rows[0] });
+  } catch (error) {
+    if (error.code === '23505') {
+      res.status(409).json({ error: 'Đội đã tồn tại' });
+      return;
+    }
+    throw error;
+  }
+}));
+
+app.put('/api/teams/:id', asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  const name = String(req.body?.name || '').trim();
+  if (!id || !name) {
+    res.status(400).json({ error: 'Đội cập nhật không hợp lệ' });
+    return;
+  }
+  try {
+    const result = await pool.query('update teams set name = $2 where id = $1 returning id, name', [id, name]);
+    if (!result.rows.length) {
+      res.status(404).json({ error: 'Không tìm thấy đội' });
+      return;
+    }
+    await logActivity(req, {
+      action: 'Cập nhật đội',
+      moduleKey: 'teamManager',
+      moduleName: 'Quản lý đội',
+      detail: `Cập nhật đội ${name}`,
+      metadata: { id, name }
+    });
+    res.json({ ok: true, team: result.rows[0] });
+  } catch (error) {
+    if (error.code === '23505') {
+      res.status(409).json({ error: 'Đội đã tồn tại' });
+      return;
+    }
+    throw error;
+  }
+}));
+
+app.delete('/api/teams/:id', asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: 'Đội xóa không hợp lệ' });
+    return;
+  }
+  const linked = await query(`
+    select
+      (select count(*)::int from users where team_id = $1 and is_deleted = false) as staff_count,
+      (select count(*)::int from assets where team_id = $1) as asset_count
+  `, [id]);
+  if ((linked[0]?.staff_count || 0) > 0 || (linked[0]?.asset_count || 0) > 0) {
+    res.status(409).json({ error: 'Không thể xóa đội đang có cán bộ hoặc tài sản liên kết' });
+    return;
+  }
+  const result = await pool.query('delete from teams where id = $1 returning id', [id]);
+  if (!result.rows.length) {
+    res.status(404).json({ error: 'Không tìm thấy đội' });
+    return;
+  }
+  await logActivity(req, {
+    action: 'Xóa đội',
+    moduleKey: 'teamManager',
+    moduleName: 'Quản lý đội',
+    detail: `Xóa đội ID ${id}`,
+    metadata: { id }
+  });
+  res.json({ ok: true });
+}));
+
+app.get('/api/staff', asyncHandler(async (_req, res) => {
+  const rows = await query(`
+    select
+      u.id as user_id,
+      u.username,
+      u.full_name,
+      u.phone,
+      coalesce(r.name, '') as rank,
+      coalesce(pos.name, '') as position,
+      coalesce(t.name, '') as team,
+      sp.birth_date,
+      sp.gender,
+      sp.ethnicity,
+      sp.citizen_id,
+      sp.citizen_issued_date,
+      sp.permanent_address,
+      sp.current_address,
+      sp.joined_date,
+      sp.education_level,
+      sp.school_name,
+      sp.major,
+      sp.graduation_year,
+      sp.training_type,
+      sp.foreign_language,
+      sp.marital_status,
+      sp.email,
+      sp.note,
+      sp.avatar_url
+    from users u
+    left join staff_profiles sp on sp.user_id = u.id
+    left join ranks r on r.id = u.rank_id
+    left join positions pos on pos.id = u.position_id
+    left join teams t on t.id = u.team_id
+    where u.is_admin = false and u.is_deleted = false
+    order by u.id
+  `);
+  res.json(rows);
+}));
+
+app.put('/api/staff/:username', asyncHandler(async (req, res) => {
+  const { username } = req.params;
+  const sections = req.body?.sections || {};
+  const photo = req.body?.photo || '';
+  const personal = sections['Thông tin cá nhân'] || {};
+  const work = sections['Thông tin công tác'] || {};
+  const education = sections['Trình độ đào tạo'] || {};
+  const other = sections['Thông tin khác'] || {};
+  const fullname = toNullableText(personal['Họ và tên']);
+  const phone = toNullableText(other['Số điện thoại'] || personal['Số điện thoại']);
+
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const current = await client.query('select id, is_admin from users where username = $1 and is_deleted = false', [username]);
+    if (!current.rows.length || current.rows[0].is_admin) {
+      await client.query('rollback');
+      res.status(404).json({ error: 'Không tìm thấy hồ sơ cán bộ' });
+      return;
+    }
+    const userId = current.rows[0].id;
+    const rankId = await findCatalogId(client, 'ranks', work['Cấp bậc']);
+    const positionId = await findCatalogId(client, 'positions', work['Chức vụ hiện tại']);
+    const teamId = await findCatalogId(client, 'teams', work['Đơn vị công tác']);
+    await client.query(`
+      update users
+      set
+        full_name = coalesce($2, full_name),
+        phone = $3,
+        rank_id = $4,
+        position_id = $5,
+        team_id = $6,
+        updated_at = now()
+      where id = $1
+    `, [userId, fullname, phone, rankId, positionId, teamId]);
+    await client.query(`
+      insert into staff_profiles (
+        user_id, birth_date, gender, ethnicity, citizen_id, citizen_issued_date,
+        permanent_address, current_address, joined_date, education_level,
+        school_name, major, graduation_year, training_type, foreign_language,
+        marital_status, email, note, avatar_url
+      )
+      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+      on conflict (user_id) do update
+      set
+        birth_date = excluded.birth_date,
+        gender = excluded.gender,
+        ethnicity = excluded.ethnicity,
+        citizen_id = excluded.citizen_id,
+        citizen_issued_date = excluded.citizen_issued_date,
+        permanent_address = excluded.permanent_address,
+        current_address = excluded.current_address,
+        joined_date = excluded.joined_date,
+        education_level = excluded.education_level,
+        school_name = excluded.school_name,
+        major = excluded.major,
+        graduation_year = excluded.graduation_year,
+        training_type = excluded.training_type,
+        foreign_language = excluded.foreign_language,
+        marital_status = excluded.marital_status,
+        email = excluded.email,
+        note = excluded.note,
+        avatar_url = excluded.avatar_url,
+        updated_at = now()
+    `, [
+      userId,
+      toDbDate(personal['Ngày sinh']),
+      toNullableText(personal['Giới tính']),
+      toNullableText(personal['Dân tộc']),
+      toNullableText(personal['Số CCCD']),
+      toDbDate(personal['Ngày cấp CCCD']),
+      toNullableText(personal['Nơi thường trú']),
+      toNullableText(personal['Nơi ở hiện nay']),
+      toDbDate(work['Ngày vào ngành']),
+      toNullableText(education['Trình độ học vấn'] || work['Trình độ chuyên môn']),
+      toNullableText(education['Trường đào tạo']),
+      toNullableText(education['Chuyên ngành'] || work['Chuyên ngành đào tạo']),
+      education['Năm tốt nghiệp'] ? Number(education['Năm tốt nghiệp']) || null : null,
+      toNullableText(education['Loại hình đào tạo']),
+      toNullableText(education['Ngoại ngữ']),
+      toNullableText(other['Tình trạng hôn nhân']),
+      toNullableText(other['Email']),
+      toNullableText(other['Ghi chú']),
+      toNullableText(photo)
+    ]);
+    await logActivity(req, {
+      action: 'Cập nhật hồ sơ cán bộ',
+      moduleKey: 'staffDirectory',
+      moduleName: 'Quản lý cán bộ',
+      detail: `Cập nhật hồ sơ ${username}`,
+      metadata: { username, fullname, phone }
+    }, client);
+    await client.query('commit');
+    res.json({ ok: true });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+app.get('/api/asset-categories', asyncHandler(async (_req, res) => {
+  const rows = await query(`
+    select
+      ac.id,
+      ac.name,
+      count(a.id)::int as total,
+      count(a.id) filter (where a.status in ('Đang sử dụng', 'Hoạt động'))::int as active,
+      count(a.id) filter (where a.status in ('Bảo trì', 'Tạm dừng'))::int as maintenance,
+      count(a.id) filter (where a.status = 'Hư')::int as broken
+    from asset_categories ac
+    left join assets a on a.category_id = ac.id
+    group by ac.id, ac.name
+    order by ac.id
+  `);
+  res.json(rows);
+}));
+
+app.post('/api/asset-categories', asyncHandler(async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  if (!name) {
+    res.status(400).json({ error: 'Tên loại tài sản không hợp lệ' });
+    return;
+  }
+  try {
+    const result = await pool.query('insert into asset_categories (name) values ($1) returning name', [name]);
+    await logActivity(req, {
+      action: 'Thêm loại tài sản',
+      moduleKey: 'assetCategoryManager',
+      moduleName: 'Danh mục tài sản',
+      detail: `Thêm loại tài sản ${name}`,
+      metadata: { name }
+    });
+    res.status(201).json({ ok: true, name: result.rows[0].name });
+  } catch (error) {
+    if (error.code === '23505') {
+      res.status(409).json({ error: 'Loại tài sản đã tồn tại' });
+      return;
+    }
+    throw error;
+  }
+}));
+
+app.put('/api/asset-categories/:oldName', asyncHandler(async (req, res) => {
+  const oldName = req.params.oldName;
+  const name = String(req.body?.name || '').trim();
+  if (!oldName || !name) {
+    res.status(400).json({ error: 'Loại tài sản cập nhật không hợp lệ' });
+    return;
+  }
+  try {
+    const result = await pool.query('update asset_categories set name = $2, updated_at = now() where name = $1 returning name', [oldName, name]);
+    if (!result.rows.length) {
+      res.status(404).json({ error: 'Không tìm thấy loại tài sản' });
+      return;
+    }
+    await logActivity(req, {
+      action: 'Cập nhật loại tài sản',
+      moduleKey: 'assetCategoryManager',
+      moduleName: 'Danh mục tài sản',
+      detail: `Đổi loại tài sản ${oldName} thành ${name}`,
+      metadata: { oldName, name }
+    });
+    res.json({ ok: true, name: result.rows[0].name });
+  } catch (error) {
+    if (error.code === '23505') {
+      res.status(409).json({ error: 'Loại tài sản đã tồn tại' });
+      return;
+    }
+    throw error;
+  }
+}));
+
+app.delete('/api/asset-categories', asyncHandler(async (req, res) => {
+  const names = Array.isArray(req.body?.names) ? req.body.names.map((item) => String(item).trim()).filter(Boolean) : [];
+  if (!names.length) {
+    res.status(400).json({ error: 'Chưa chọn loại tài sản để xóa' });
+    return;
+  }
+  const linked = await query(`
+    select distinct ac.name
+    from asset_categories ac
+    join assets a on a.category_id = ac.id
+    where ac.name = any($1::text[])
+  `, [names]);
+  if (linked.length) {
+    res.status(409).json({ error: `Không thể xóa loại đang có tài sản: ${linked.map((row) => row.name).join(', ')}` });
+    return;
+  }
+  const result = await pool.query(
+    'delete from asset_categories where name = any($1::text[]) returning name',
+    [names]
+  );
+  await logActivity(req, {
+    action: 'Xóa loại tài sản',
+    moduleKey: 'assetCategoryManager',
+    moduleName: 'Danh mục tài sản',
+    detail: `Xóa ${result.rows.length} loại tài sản`,
+    metadata: { names: result.rows.map((row) => row.name) }
+  });
+  res.json({ ok: true, deleted: result.rows.map((row) => row.name) });
+}));
+
+app.get('/api/assets', asyncHandler(async (_req, res) => {
+  const rows = await query(`
+    select
+      a.id,
+      a.asset_code,
+      a.name,
+      coalesce(ac.name, '') as category,
+      a.received_date,
+      coalesce(u.full_name, '') as owner,
+      coalesce(t.name, '') as team,
+      a.status,
+      a.original_value,
+      a.note
+    from assets a
+    left join asset_categories ac on ac.id = a.category_id
+    left join users u on u.id = a.manager_user_id
+    left join teams t on t.id = a.team_id
+    order by a.id
+  `);
+  res.json(rows);
+}));
+
+app.post('/api/assets', asyncHandler(async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const payload = await buildAssetPayload(client, req.body || {});
+    if (payload.error) {
+      await client.query('rollback');
+      res.status(400).json({ error: payload.error });
+      return;
+    }
+    const result = await client.query(`
+      insert into assets (
+        asset_code, name, category_id, received_date, manager_user_id, team_id, status, original_value, note
+      )
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      returning id, asset_code
+    `, [
+      payload.assetCode,
+      payload.name,
+      payload.categoryId,
+      payload.receivedDate,
+      payload.managerUserId,
+      payload.teamId,
+      payload.status,
+      payload.originalValue,
+      payload.note
+    ]);
+    await logActivity(req, {
+      action: 'Thêm tài sản',
+      moduleKey: 'assets',
+      moduleName: 'Quản lý Tài sản',
+      detail: `Thêm tài sản ${payload.assetCode} - ${payload.name}`,
+      metadata: { assetCode: payload.assetCode, name: payload.name, status: payload.status }
+    }, client);
+    await client.query('commit');
+    res.status(201).json({ ok: true, id: result.rows[0].id, assetCode: result.rows[0].asset_code });
+  } catch (error) {
+    await client.query('rollback');
+    if (error.code === '23505') {
+      res.status(409).json({ error: 'Mã tài sản đã tồn tại' });
+      return;
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+app.put('/api/assets/:assetCode', asyncHandler(async (req, res) => {
+  const { assetCode } = req.params;
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const payload = await buildAssetPayload(client, { ...req.body, id: assetCode });
+    if (payload.error) {
+      await client.query('rollback');
+      res.status(400).json({ error: payload.error });
+      return;
+    }
+    const result = await client.query(`
+      update assets
+      set
+        name = $2,
+        category_id = $3,
+        received_date = $4,
+        manager_user_id = $5,
+        team_id = $6,
+        status = $7,
+        original_value = $8,
+        note = $9,
+        updated_at = now()
+      where asset_code = $1
+      returning asset_code
+    `, [
+      assetCode,
+      payload.name,
+      payload.categoryId,
+      payload.receivedDate,
+      payload.managerUserId,
+      payload.teamId,
+      payload.status,
+      payload.originalValue,
+      payload.note
+    ]);
+    await logActivity(req, {
+      action: 'Cập nhật tài sản',
+      moduleKey: 'assets',
+      moduleName: 'Quản lý Tài sản',
+      detail: `Cập nhật tài sản ${assetCode}`,
+      metadata: { assetCode, name: payload.name, status: payload.status }
+    }, client);
+    await client.query('commit');
+    if (!result.rows.length) {
+      res.status(404).json({ error: 'Không tìm thấy tài sản' });
+      return;
+    }
+    res.json({ ok: true, assetCode: result.rows[0].asset_code });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+app.delete('/api/assets', asyncHandler(async (req, res) => {
+  const assetCodes = Array.isArray(req.body?.assetCodes) ? req.body.assetCodes : [];
+  const filtered = assetCodes.map((item) => String(item).trim()).filter(Boolean);
+  if (!filtered.length) {
+    res.status(400).json({ error: 'Chưa chọn tài sản để xóa' });
+    return;
+  }
+  const result = await pool.query(
+    'delete from assets where asset_code = any($1::text[]) returning asset_code',
+    [filtered]
+  );
+  await logActivity(req, {
+    action: 'Xóa tài sản',
+    moduleKey: 'assets',
+    moduleName: 'Quản lý Tài sản',
+    detail: `Xóa ${result.rows.length} tài sản`,
+    metadata: { assetCodes: result.rows.map((row) => row.asset_code) }
+  });
+  res.json({ ok: true, deleted: result.rows.map((row) => row.asset_code) });
+}));
+
+app.get('/api/reports/assets-by-category', asyncHandler(async (_req, res) => {
+  const rows = await query(`
+    select ac.name as label, count(a.id)::int as value
+    from asset_categories ac
+    left join assets a on a.category_id = ac.id
+    group by ac.id, ac.name
+    order by ac.id
+  `);
+  res.json(rows);
+}));
+
+app.get('/api/reports/assets-by-team', asyncHandler(async (_req, res) => {
+  const rows = await query(`
+    select coalesce(t.name, 'Chưa gán đội') as label, count(a.id)::int as value
+    from assets a
+    left join teams t on t.id = a.team_id
+    group by t.name
+    order by value desc, label
+  `);
+  res.json(rows);
+}));
+
+app.get('*', (_req, res) => {
+  res.sendFile(path.join(appRoot, 'index.html'));
+});
+
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(500).json({ error: err.message });
+});
+
+ensureSchema()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`TTTTCH demo running at http://localhost:${port}`);
+    });
+  })
+  .catch((error) => {
+    console.error('Không khởi tạo được schema PostgreSQL', error);
+    process.exit(1);
+  });
