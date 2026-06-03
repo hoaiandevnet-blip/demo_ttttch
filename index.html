@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Demo phần mềm TTTTCH</title>
+  <link rel="icon" type="image/png" href="assets/img/huy-hieu-cand.png"/>
+  <link rel="apple-touch-icon" href="assets/img/huy-hieu-cand.png"/>
+  <link rel="stylesheet" href="assets/css/style.css"/>
+</head>
+<body>
+  <section class="login-screen" id="loginScreen">
+    <div class="login-slideshow" aria-hidden="true">
+      <span style="background-image:url('assets/img/login-slide-1.webp')"></span>
+      <span style="background-image:url('assets/img/login-slide-2.jpg')"></span>
+      <span style="background-image:url('assets/img/login-slide-3.jpg')"></span>
+      <span style="background-image:url('assets/img/login-slide-4.jpeg')"></span>
+      <span style="background-image:url('assets/img/login-slide-5.webp')"></span>
+    </div>
+    <div class="login-panel">
+      <div class="login-brand">
+        <img class="login-crest" src="assets/img/huy-hieu-cand.png" alt="Huy hiệu CAND"/>
+        <div>
+          <span>Hệ thống quản trị nội bộ</span>
+          <strong>TTTTCH</strong>
+        </div>
+      </div>
+      <h1>Đăng nhập hệ thống</h1>
+      <div class="login-note">
+        <span>Phiên bản demo nội bộ</span>
+        <strong>Mật khẩu mẫu: 123456</strong>
+      </div>
+      <form id="loginForm" class="login-form">
+        <label>Tài khoản
+          <select id="loginAccount"></select>
+        </label>
+        <label>Mật khẩu
+          <span class="password-field">
+            <input id="loginPassword" type="password" value="123456" placeholder="Nhập mật khẩu"/>
+            <button id="togglePassword" type="button" aria-label="Hiển thị mật khẩu">Hiện</button>
+          </span>
+        </label>
+        <button class="primary" type="submit">Đăng nhập</button>
+      </form>
+    </div>
+  </section>
+
+  <div class="app locked" id="appShell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img class="brand-logo" src="assets/img/huy-hieu-cand.png" alt="Huy hiệu CAND"/>
+        <div>
+          <small>Công an nhân dân</small>
+          <strong>TTTTCH</strong>
+          <span>Hệ thống quản trị nội bộ</span>
+        </div>
+      </div>
+      <nav>
+        <span class="nav-label">Phân hệ</span>
+        <button class="nav-item active admin-only" data-module-key="permissions" data-page="permissions"><span><i data-lucide="shield-check"></i></span>Hệ thống & Phân quyền</button>
+        <button class="nav-item admin-only" data-module-key="staffDirectory" data-page="staffDirectory"><span><i data-lucide="users-round"></i></span>Quản lý cán bộ</button>
+        <button class="nav-item admin-only" data-module-key="catalogManager" data-page="catalogManager"><span><i data-lucide="list-plus"></i></span>Quản lý danh mục</button>
+        <button class="nav-item admin-only" data-module-key="teamManager" data-page="teamManager"><span><i data-lucide="users-round"></i></span>Quản lý đội</button>
+        <button class="nav-item admin-only" data-module-key="moduleManager" data-page="moduleManager"><span><i data-lucide="layout-dashboard"></i></span>Quản lý module</button>
+        <button class="nav-item admin-only" data-module-key="assetCategoryManager" data-page="assetCategoryManager"><span><i data-lucide="boxes"></i></span>Danh mục tài sản</button>
+        <button class="nav-item admin-only" data-module-key="reports" data-page="reports"><span><i data-lucide="chart-column"></i></span>Báo cáo</button>
+        <button class="nav-item admin-only" data-module-key="activityLog" data-page="activityLog"><span><i data-lucide="history"></i></span>Log lịch sử</button>
+        <button class="nav-item user-module" data-module-key="staff" data-page="staff"><span><i data-lucide="id-card"></i></span>Hồ sơ Cán bộ</button>
+        <button class="nav-item user-module" data-module-key="assets" data-page="assets"><span><i data-lucide="package-check"></i></span>Quản lý Tài sản</button>
+        <button class="nav-item user-module" data-module-key="settings" data-page="settings"><span><i data-lucide="settings"></i></span>Cài đặt</button>
+      </nav>
+      <div class="sidebar-foot">
+        <img src="assets/img/huy-hieu-cand.png" alt="Huy hiệu CAND"/>
+        <div>
+          <strong>LH: Trung úy Vũ Thành Công Duy - PV01</strong>
+          <span>SĐT: 0886.057.738</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title">
+          <span class="system-kicker"><img src="assets/img/huy-hieu-cand.png" alt="Huy hiệu CAND"/> CÔNG AN TP. ĐỒNG NAI · PHÒNG PV01</span>
+          <h1 id="pageTitle">Hệ thống & Phân quyền</h1>
+          <p id="pageSubtitle">Quản trị tài khoản, nhóm người dùng và quyền chức năng</p>
+        </div>
+        <div class="topbar-meta">
+          <div class="meta-pill"><i data-lucide="wifi"></i> Online</div>
+          <div class="meta-pill"><i data-lucide="calendar-days"></i><span id="currentDateLabel">--</span></div>
+        </div>
+        <div class="userbox">
+          <div class="user-avatar" id="userAvatar">A</div>
+          <div>
+            <span id="currentUser">Chưa đăng nhập</span>
+            <small id="currentRole">--</small>
+          </div>
+          <button class="ghost icon-button" id="logoutBtn"><i data-lucide="log-out"></i>Đăng xuất</button>
+        </div>
+      </header>
+
+      <section id="permissions" class="page active" data-module-key="permissions">
+        <div class="metrics admin-only">
+          <div class="metric"><i data-lucide="users"></i><span>Tổng tài khoản</span><strong id="totalAccounts">0</strong></div>
+          <div class="metric"><i data-lucide="user-check"></i><span>Đang hoạt động</span><strong id="activeAccounts">0</strong></div>
+          <div class="metric"><i data-lucide="user-lock"></i><span>Tạm khóa</span><strong id="lockedAccounts">0</strong></div>
+          <div class="metric"><i data-lucide="key-round"></i><span>Quyền chức năng</span><strong id="totalPerms">0</strong></div>
+        </div>
+        <div class="card admin-only">
+          <div class="card-head">
+            <h2>Danh sách tài khoản</h2>
+            <div class="header-actions">
+              <button class="ghost icon-button" id="downloadAccountTemplate"><i data-lucide="file-spreadsheet"></i>Xuất file mẫu</button>
+              <button class="ghost icon-button" id="importAccounts"><i data-lucide="upload"></i>Nhập Excel</button>
+              <input id="accountExcelInput" type="file" accept=".xlsx,.xls" hidden/>
+              <button class="danger icon-button bulk-delete hidden" id="deleteSelectedAccounts" type="button"><i data-lucide="trash-2"></i>Xóa</button>
+              <button class="primary icon-button" id="openUserModal"><i data-lucide="user-plus"></i>Tạo mới tài khoản</button>
+            </div>
+          </div>
+          <div class="table-tools">
+            <input id="accountSearch" placeholder="Tìm kiếm tài khoản, họ tên, chức vụ..."/>
+            <select id="statusFilter">
+              <option value="">Tất cả trạng thái</option>
+              <option value="Hoạt động">Hoạt động</option>
+              <option value="Tạm khóa">Tạm khóa</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th><input id="selectAllAccounts" type="checkbox" aria-label="Chọn tất cả tài khoản"/></th><th>Tên đăng nhập</th><th>Họ và tên</th><th>Cấp bậc</th><th>Chức vụ</th><th>Số điện thoại</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+              <tbody id="accountRows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <div class="card">
+            <h2>Phân quyền chức năng</h2>
+            <div class="role-list" id="roleList"></div>
+          </div>
+          <div class="card">
+            <h2 id="roleName">Quyền của người dùng</h2>
+            <div class="perm-list" id="permList"></div>
+            <button class="primary right icon-button" id="savePerm"><i data-lucide="save"></i>Lưu phân quyền</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="staff" class="page" data-module-key="staff">
+        <div class="card">
+          <div class="card-head">
+            <h2>Nhập liệu Hồ sơ Cán bộ</h2>
+            <button class="ghost icon-button" id="resetStaff"><i data-lucide="refresh-cw"></i>Làm mới</button>
+          </div>
+          <div class="tabs" id="staffTabs"></div>
+          <div class="staff-layout">
+            <div class="avatar-card">
+              <div class="avatar" id="staffAvatar">👤</div>
+              <input id="avatarInput" type="file" accept="image/*" hidden/>
+              <button id="uploadAvatar" class="ghost icon-button" type="button"><i data-lucide="image-up"></i>Tải ảnh lên</button>
+            </div>
+            <form id="staffForm" class="form-grid"></form>
+          </div>
+          <div class="actionbar">
+            <button class="ghost">Hủy bỏ</button>
+            <button class="primary icon-button" id="saveStaff"><i data-lucide="save"></i>Lưu hồ sơ</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="staffDirectory" class="page admin-only" data-module-key="staffDirectory">
+        <div class="card">
+          <div class="card-head">
+            <h2>Quản lý cán bộ theo đội</h2>
+          </div>
+          <div class="filter-grid">
+            <label>Tên cán bộ / tài khoản
+              <input id="staffDirectorySearch" placeholder="Nhập tên, tài khoản..."/>
+            </label>
+            <label>Chức vụ
+              <select id="staffPositionFilter"></select>
+            </label>
+            <label>Chức hàm
+              <select id="staffRankFilter"></select>
+            </label>
+            <label>Đội
+              <select id="staffTeamFilter"></select>
+            </label>
+          </div>
+          <div class="staff-admin-layout">
+            <div class="staff-list" id="staffDirectoryRows"></div>
+            <div class="staff-profile" id="staffProfileDetail"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="moduleManager" class="page admin-only" data-module-key="moduleManager">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>Quản lý hiển thị module</h2>
+              <p class="section-note">Bật/tắt hoặc tạo mới module được hiển thị trong hệ thống.</p>
+            </div>
+          </div>
+          <div class="module-create">
+            <label>Tên module
+              <input id="newModuleName" placeholder="VD: Báo cáo thống kê"/>
+            </label>
+            <label>Mô tả
+              <input id="newModuleDescription" placeholder="Mô tả ngắn chức năng module"/>
+            </label>
+            <button class="primary icon-button" id="addModule" type="button"><i data-lucide="plus"></i>Tạo module</button>
+          </div>
+          <div class="module-settings" id="moduleSettings"></div>
+        </div>
+      </section>
+
+      <section id="teamManager" class="page admin-only" data-module-key="teamManager">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>Quản lý đội</h2>
+              <p class="section-note">Thêm, sửa, xóa đội trực thuộc Phòng PV01.</p>
+            </div>
+          </div>
+          <div class="inline-add">
+            <input id="newTeamManagerName" placeholder="Nhập tên đội mới"/>
+            <button class="primary icon-button" id="addManagedTeam" type="button"><i data-lucide="plus"></i>Thêm đội</button>
+          </div>
+          <div class="team-manager-list" id="teamManagerList"></div>
+        </div>
+      </section>
+
+      <section id="catalogManager" class="page admin-only" data-module-key="catalogManager">
+        <div class="grid two catalog-grid">
+          <div class="card catalog-panel">
+            <div class="card-head">
+              <div>
+                <span class="catalog-eyebrow"><i data-lucide="briefcase-business"></i> Danh mục nhân sự</span>
+                <h2>Quản lý chức vụ</h2>
+                <p class="section-note">Chuẩn hóa chức vụ dùng khi tạo tài khoản và hồ sơ cán bộ.</p>
+              </div>
+              <button class="danger icon-button bulk-delete hidden" id="deleteSelectedPositions" type="button"><i data-lucide="trash-2"></i>Xóa</button>
+            </div>
+            <div class="inline-add">
+              <input id="newPositionName" placeholder="Nhập chức vụ mới"/>
+              <button class="primary icon-button" id="addPosition" type="button"><i data-lucide="plus"></i>Thêm</button>
+            </div>
+            <div class="catalog-list" id="positionCatalog"></div>
+          </div>
+          <div class="card catalog-panel">
+            <div class="card-head">
+              <div>
+                <span class="catalog-eyebrow"><i data-lucide="badge"></i> Danh mục cấp bậc</span>
+                <h2>Quản lý chức hàm</h2>
+                <p class="section-note">Quản lý danh sách chức hàm/cấp bậc để đồng bộ toàn hệ thống.</p>
+              </div>
+              <button class="danger icon-button bulk-delete hidden" id="deleteSelectedRanks" type="button"><i data-lucide="trash-2"></i>Xóa</button>
+            </div>
+            <div class="inline-add">
+              <input id="newRankName" placeholder="Nhập chức hàm mới"/>
+              <button class="primary icon-button" id="addRank" type="button"><i data-lucide="plus"></i>Thêm</button>
+            </div>
+            <div class="catalog-list" id="rankCatalog"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="reports" class="page admin-only" data-module-key="reports">
+        <div class="report-summary" id="reportSummary"></div>
+        <div class="report-grid">
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <h2>Thống kê thiết bị hiện có</h2>
+                <p class="section-note">Tổng số theo từng loại thiết bị đang quản lý.</p>
+              </div>
+            </div>
+            <div class="bar-chart" id="assetTypeChart"></div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <div>
+                <h2>Thiết bị đã bàn giao theo đội</h2>
+                <p class="section-note">Số tài sản đang gắn với từng đội.</p>
+              </div>
+            </div>
+            <div class="bar-chart" id="teamHandoverChart"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="activityLog" class="page admin-only" data-module-key="activityLog">
+        <div class="card activity-log-card">
+          <div class="card-head">
+            <div>
+              <h2>Log lịch sử sử dụng</h2>
+              <p class="section-note">Theo dõi thao tác đăng nhập, mở module, cập nhật dữ liệu và xuất file của từng tài khoản.</p>
+            </div>
+            <div class="header-actions">
+              <span class="activity-count"><i data-lucide="list-checks"></i><strong id="activityTotal">0</strong> bản ghi</span>
+              <button class="ghost icon-button" id="refreshActivityLog" type="button"><i data-lucide="refresh-cw"></i>Làm mới</button>
+              <button class="primary icon-button" id="exportActivityLog" type="button"><i data-lucide="download"></i>Xuất file</button>
+            </div>
+          </div>
+          <div class="activity-filter-grid">
+            <label>Tài khoản
+              <select id="activityUserFilter"><option value="">Tất cả tài khoản</option></select>
+            </label>
+            <label>Module
+              <select id="activityModuleFilter"><option value="">Tất cả module</option></select>
+            </label>
+            <label>Hành động
+              <select id="activityActionFilter"><option value="">Tất cả hành động</option></select>
+            </label>
+            <label>Từ ngày
+              <input id="activityDateFrom" type="date"/>
+            </label>
+            <label>Đến ngày
+              <input id="activityDateTo" type="date"/>
+            </label>
+            <label>Tìm kiếm
+              <input id="activitySearch" placeholder="Tài khoản, hành động, chi tiết..."/>
+            </label>
+          </div>
+          <div class="table-wrap activity-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Thời gian</th>
+                  <th>Tài khoản</th>
+                  <th>Hành động</th>
+                  <th>Module</th>
+                  <th>Chi tiết</th>
+                  <th>IP</th>
+                </tr>
+              </thead>
+              <tbody id="activityLogRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="assetCategoryManager" class="page admin-only" data-module-key="assetCategoryManager">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>Danh mục tài sản</h2>
+              <p class="section-note">Quản lý loại tài sản và theo dõi số lượng theo trạng thái.</p>
+            </div>
+            <button class="danger icon-button bulk-delete hidden" id="deleteSelectedAssetCategories" type="button"><i data-lucide="trash-2"></i>Xóa</button>
+          </div>
+          <div class="inline-add">
+            <input id="newAssetCategoryName" placeholder="VD: PC, Di động, Màn hình..."/>
+            <button class="primary icon-button" id="addAssetCategory" type="button"><i data-lucide="plus"></i>Thêm loại</button>
+          </div>
+          <div class="asset-category-layout">
+            <div class="asset-category-list" id="assetCategoryList"></div>
+            <div class="asset-category-detail" id="assetCategoryDetail"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="noAccess" class="page">
+        <div class="card empty">
+          <div class="empty-icon"><i data-lucide="circle-alert"></i></div>
+          <h3>Chưa được phân quyền module</h3>
+          <p>Tài khoản hiện tại chưa được cấp quyền sử dụng module nào. Vui lòng liên hệ quản trị viên.</p>
+        </div>
+      </section>
+
+      <section id="settings" class="page user-module" data-module-key="settings">
+        <div class="settings-hero">
+          <div>
+            <span class="settings-eyebrow"><i data-lucide="sliders-horizontal"></i> Tùy biến giao diện</span>
+            <h2>Cài đặt trải nghiệm sử dụng</h2>
+            <p>Điều chỉnh chế độ hiển thị, màu nhấn và độ dày giao diện theo môi trường làm việc.</p>
+          </div>
+          <button class="ghost icon-button" id="resetAppearance" type="button"><i data-lucide="rotate-ccw"></i>Khôi phục mặc định</button>
+        </div>
+        <div class="settings-grid">
+          <div class="settings-card">
+            <div class="settings-card-head"><span><i data-lucide="moon-star"></i></span><div><h3>Chế độ màu</h3><p>Sáng, tối hoặc tự động theo hệ điều hành.</p></div></div>
+            <div class="segmented-control" data-setting-group="theme">
+              <button type="button" data-theme-choice="light"><i data-lucide="sun"></i>Sáng</button>
+              <button type="button" data-theme-choice="dark"><i data-lucide="moon"></i>Tối</button>
+              <button type="button" data-theme-choice="system"><i data-lucide="monitor-smartphone"></i>Tự động</button>
+            </div>
+          </div>
+          <div class="settings-card">
+            <div class="settings-card-head"><span><i data-lucide="palette"></i></span><div><h3>Màu nhấn</h3><p>Chọn sắc độ chủ đạo cho nút, tab và trạng thái đang chọn.</p></div></div>
+            <div class="accent-picker" data-setting-group="accent">
+              <button type="button" class="accent-option crimson" data-accent-choice="crimson"><span></span>Đỏ CAND</button>
+              <button type="button" class="accent-option gold" data-accent-choice="gold"><span></span>Vàng đồng</button>
+              <button type="button" class="accent-option emerald" data-accent-choice="emerald"><span></span>Xanh nghiệp vụ</button>
+            </div>
+          </div>
+          <div class="settings-card">
+            <div class="settings-card-head"><span><i data-lucide="rows-3"></i></span><div><h3>Mật độ hiển thị</h3><p>Thoải mái để trình bày; gọn để thao tác nhiều dữ liệu.</p></div></div>
+            <div class="segmented-control" data-setting-group="density">
+              <button type="button" data-density-choice="comfortable"><i data-lucide="panel-top"></i>Thoải mái</button>
+              <button type="button" data-density-choice="compact"><i data-lucide="list-collapse"></i>Gọn</button>
+            </div>
+          </div>
+          <div class="settings-card">
+            <div class="settings-card-head"><span><i data-lucide="sparkles"></i></span><div><h3>Hiệu ứng</h3><p>Bật/tắt chuyển động nhẹ khi đăng nhập, đổi trang và hover.</p></div></div>
+            <label class="settings-toggle">
+              <input id="motionToggle" type="checkbox"/>
+              <span class="settings-toggle-ui"></span>
+              <strong>Bật hiệu ứng giao diện</strong>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section id="assets" class="page" data-module-key="assets">
+        <div class="card">
+          <h2>Quản lý Tài sản</h2>
+          <div class="tabs" id="assetTabs"></div>
+
+          <div id="assetReceive" class="asset-panel active">
+            <div class="tree-transfer">
+              <div class="tree">
+                <h3>Sơ đồ tổ chức Phòng/Đội</h3>
+                <div id="orgTree"></div>
+              </div>
+              <div class="transfer">
+                <h3 id="teamAssetTitle">Cán bộ và tài sản đã bàn giao</h3>
+                <div id="teamAssetList"></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="assetList" class="asset-panel">
+            <div class="table-tools">
+              <input id="assetSearch" placeholder="Tìm kiếm mã tài sản, tên tài sản..."/>
+              <button class="danger icon-button admin-only bulk-delete hidden" id="deleteSelectedAssets" type="button"><i data-lucide="trash-2"></i>Xóa</button>
+              <button class="primary icon-button" id="switchAddAsset"><i data-lucide="package-plus"></i>Thêm tài sản mới</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th class="admin-only"><input id="selectAllAssets" type="checkbox" aria-label="Chọn tất cả tài sản"/></th><th>Mã TS</th><th>Tên tài sản</th><th>Ngày nhận</th><th>Người quản lý</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+                <tbody id="assetRows"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="assetAdd" class="asset-panel">
+            <div class="asset-import-panel">
+              <div>
+                <h3><i data-lucide="file-spreadsheet"></i> Nhập nhanh bằng Excel</h3>
+                <p class="section-note">Tải file mẫu, nhập nhiều tài sản rồi import vào hệ thống.</p>
+              </div>
+              <div class="asset-import-actions">
+                <button class="ghost icon-button" id="downloadAssetTemplate" type="button"><i data-lucide="download"></i>Xuất file mẫu</button>
+                <button class="ghost icon-button" id="importAssets" type="button"><i data-lucide="upload"></i>Nhập Excel</button>
+                <input id="assetExcelInput" type="file" accept=".xlsx,.xls" hidden/>
+              </div>
+            </div>
+            <form id="assetForm" class="form-grid"></form>
+            <div class="actionbar"><button class="ghost icon-button" id="resetAsset"><i data-lucide="x"></i>Hủy</button><button class="primary icon-button" id="saveAsset"><i data-lucide="save"></i>Lưu tài sản</button></div>
+          </div>
+
+          <div id="assetCheck" class="asset-panel empty">
+            <div class="empty-icon"><i data-lucide="clipboard-check"></i></div>
+            <h3>Chưa nâng Kiểm kê định kỳ</h3>
+            <p>Lập đợt kiểm kê tài sản để theo dõi, đối chiếu và ghi nhận hiện trạng.</p>
+            <button class="primary icon-button" id="createInventory"><i data-lucide="calendar-plus"></i>Tạo đợt kiểm kê mới</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal" id="userModal" aria-hidden="true">
+    <div class="modal-box">
+      <div class="modal-head"><h2 id="userModalTitle">Thêm mới tài khoản</h2><button id="closeUserModal">×</button></div>
+      <form id="newUserForm" class="form-grid modal-form">
+        <label>Tên đăng nhập*<input required name="username" placeholder="VD: nguyenvana"/></label>
+        <label>Mật khẩu*
+          <span class="password-field">
+            <input required name="password" type="password" placeholder="Nhập mật khẩu"/>
+            <button id="toggleUserPassword" class="admin-only" type="button" aria-label="Hiển thị mật khẩu tài khoản">Hiện</button>
+          </span>
+        </label>
+        <label>Họ tên*<input required name="fullname" placeholder="Nguyễn Văn A"/></label>
+        <label>Số điện thoại<input name="phone" placeholder="09xxxxxxxx"/></label>
+        <label>Cấp bậc<select name="rank"><option value="">Không áp dụng</option><option>Thiếu úy</option><option>Trung úy</option><option>Đại úy</option></select></label>
+        <label>Chức vụ<select name="position"><option value="">Không áp dụng</option><option>Cán bộ</option><option>Đội trưởng</option><option>Phó đội trưởng</option></select></label>
+        <label>Đội<select name="team"><option value="">Chọn đội</option></select></label>
+        <label>Trạng thái<select name="status"><option>Hoạt động</option><option>Tạm khóa</option></select></label>
+      </form>
+      <div class="actionbar"><button class="ghost" id="cancelUser">Hủy bỏ</button><button class="primary" id="createUser">Lưu tài khoản</button></div>
+    </div>
+  </div>
+
+  <div class="modal" id="assetModal" aria-hidden="true">
+    <div class="modal-box">
+      <div class="modal-head"><h2>Chỉnh sửa tài sản</h2><button id="closeAssetModal">×</button></div>
+      <form id="editAssetForm" class="form-grid modal-form"></form>
+      <div class="actionbar"><button class="ghost" id="cancelAssetEdit">Hủy bỏ</button><button class="primary" id="updateAsset">Lưu thay đổi</button></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">Đã lưu thành công</div>
+  <script src="assets/js/lucide.min.js"></script>
+  <script src="assets/js/xlsx.full.min.js"></script>
+  <script src="assets/js/app.js"></script>
+</body>
+</html>
