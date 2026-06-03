@@ -470,11 +470,41 @@
             <div class="actionbar"><button class="ghost icon-button" id="resetAsset"><i data-lucide="x"></i>Hủy</button><button class="primary icon-button" id="saveAsset"><i data-lucide="save"></i>Lưu tài sản</button></div>
           </div>
 
-          <div id="assetCheck" class="asset-panel empty">
-            <div class="empty-icon"><i data-lucide="clipboard-check"></i></div>
-            <h3>Chưa nâng Kiểm kê định kỳ</h3>
-            <p>Lập đợt kiểm kê tài sản để theo dõi, đối chiếu và ghi nhận hiện trạng.</p>
-            <button class="primary icon-button" id="createInventory"><i data-lucide="calendar-plus"></i>Tạo đợt kiểm kê mới</button>
+          <div id="assetCheck" class="asset-panel">
+            <div class="inventory-shell">
+              <div class="inventory-create">
+                <div>
+                  <span class="section-chip"><i data-lucide="clipboard-check"></i> Kiểm kê định kỳ</span>
+                  <h3>Tạo và theo dõi đợt kiểm kê tài sản</h3>
+                  <p class="section-note">Mỗi đợt kiểm kê sẽ chốt danh sách tài sản hiện có, cho phép đối chiếu tình trạng thực tế và ghi chú sai lệch.</p>
+                </div>
+                <div class="inventory-form">
+                  <label>Tên đợt kiểm kê
+                    <input id="inventoryName" placeholder="VD: Kiểm kê quý II/2026"/>
+                  </label>
+                  <label>Ngày kiểm kê
+                    <input id="inventoryDate" type="date"/>
+                  </label>
+                  <label>Ghi chú
+                    <input id="inventoryNote" placeholder="Phạm vi, người phụ trách..."/>
+                  </label>
+                  <button class="primary icon-button" id="createInventory" type="button"><i data-lucide="calendar-plus"></i>Tạo đợt</button>
+                </div>
+              </div>
+
+              <div class="inventory-layout">
+                <aside class="inventory-sessions" id="inventorySessions"></aside>
+                <section class="inventory-detail">
+                  <div class="inventory-detail-head" id="inventoryDetailHead"></div>
+                  <div class="table-wrap inventory-table-wrap">
+                    <table>
+                      <thead><tr><th>Mã TS</th><th>Tên tài sản</th><th>Người quản lý</th><th>Dự kiến</th><th>Thực tế</th><th>Ghi chú</th><th>Thao tác</th></tr></thead>
+                      <tbody id="inventoryRows"></tbody>
+                    </table>
+                  </div>
+                </section>
+              </div>
+            </div>
           </div>
         </div>
       </section>

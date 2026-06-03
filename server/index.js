@@ -87,6 +87,36 @@ async function ensureSchema() {
   await pool.query('create index if not exists idx_activity_logs_created_at on activity_logs (created_at desc)');
   await pool.query('create index if not exists idx_activity_logs_actor on activity_logs (actor_username)');
   await pool.query(`
+    create table if not exists inventory_sessions (
+      id bigserial primary key,
+      name text not null,
+      inventory_date date not null default current_date,
+      status text not null default 'Đang kiểm kê',
+      note text,
+      created_by text,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `);
+  await pool.query(`
+    create table if not exists inventory_items (
+      id bigserial primary key,
+      session_id bigint not null references inventory_sessions(id) on delete cascade,
+      asset_id bigint not null references assets(id) on delete cascade,
+      expected_status text,
+      actual_status text,
+      checked boolean not null default false,
+      checked_by text,
+      checked_at timestamptz,
+      note text,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      unique(session_id, asset_id)
+    )
+  `);
+  await pool.query('create index if not exists idx_inventory_sessions_date on inventory_sessions (inventory_date desc, id desc)');
+  await pool.query('create index if not exists idx_inventory_items_session on inventory_items (session_id)');
+  await pool.query(`
     alter table users
     add column if not exists is_deleted boolean not null default false
   `);
@@ -1331,6 +1361,151 @@ app.delete('/api/assets', asyncHandler(async (req, res) => {
     metadata: { assetCodes: result.rows.map((row) => row.asset_code) }
   });
   res.json({ ok: true, deleted: result.rows.map((row) => row.asset_code) });
+}));
+
+app.get('/api/inventories', asyncHandler(async (_req, res) => {
+  const rows = await query(`
+    select
+      s.id,
+      s.name,
+      s.inventory_date,
+      s.status,
+      coalesce(s.note, '') as note,
+      coalesce(s.created_by, '') as created_by,
+      s.created_at,
+      count(i.id)::int as total_items,
+      count(i.id) filter (where i.checked)::int as checked_items,
+      count(i.id) filter (where i.checked and coalesce(i.actual_status, i.expected_status, '') <> coalesce(i.expected_status, ''))::int as changed_items
+    from inventory_sessions s
+    left join inventory_items i on i.session_id = s.id
+    group by s.id
+    order by s.inventory_date desc, s.id desc
+  `);
+  res.json(rows);
+}));
+
+app.post('/api/inventories', asyncHandler(async (req, res) => {
+  const name = String(req.body?.name || '').trim() || `Kiểm kê tài sản ${new Date().toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}`;
+  const inventoryDate = toDbDate(req.body?.inventoryDate || req.body?.inventory_date) || new Date().toISOString().slice(0, 10);
+  const note = toNullableText(req.body?.note);
+  const assetCodes = Array.isArray(req.body?.assetCodes)
+    ? req.body.assetCodes.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const inserted = await client.query(`
+      insert into inventory_sessions (name, inventory_date, note, created_by)
+      values ($1, $2, $3, $4)
+      returning id, name
+    `, [name, inventoryDate, note, getActor(req)]);
+    const params = [inserted.rows[0].id];
+    let filterSql = '';
+    if (assetCodes.length) {
+      params.push(assetCodes);
+      filterSql = `where asset_code = any($${params.length}::text[])`;
+    }
+    await client.query(`
+      insert into inventory_items (session_id, asset_id, expected_status, actual_status)
+      select $1, id, status, status
+      from assets
+      ${filterSql}
+      on conflict (session_id, asset_id) do nothing
+    `, params);
+    await logActivity(req, {
+      action: 'Tạo đợt kiểm kê',
+      moduleKey: 'assets',
+      moduleName: 'Quản lý Tài sản',
+      detail: `Tạo đợt kiểm kê ${name}`,
+      metadata: { inventoryId: inserted.rows[0].id, name, assetCodes }
+    }, client);
+    await client.query('commit');
+    res.status(201).json({ ok: true, id: inserted.rows[0].id, name: inserted.rows[0].name });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
+
+app.get('/api/inventories/:id', asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    res.status(400).json({ error: 'Mã đợt kiểm kê không hợp lệ' });
+    return;
+  }
+  const [session] = await query(`
+    select id, name, inventory_date, status, coalesce(note, '') as note, coalesce(created_by, '') as created_by, created_at
+    from inventory_sessions
+    where id = $1
+  `, [id]);
+  if (!session) {
+    res.status(404).json({ error: 'Không tìm thấy đợt kiểm kê' });
+    return;
+  }
+  const items = await query(`
+    select
+      i.id,
+      a.asset_code,
+      a.name,
+      coalesce(ac.name, '') as category,
+      coalesce(u.full_name, '') as owner,
+      coalesce(t.name, '') as team,
+      i.expected_status,
+      i.actual_status,
+      i.checked,
+      coalesce(i.checked_by, '') as checked_by,
+      i.checked_at,
+      coalesce(i.note, '') as note
+    from inventory_items i
+    join assets a on a.id = i.asset_id
+    left join asset_categories ac on ac.id = a.category_id
+    left join users u on u.id = a.manager_user_id
+    left join teams t on t.id = a.team_id
+    where i.session_id = $1
+    order by a.asset_code
+  `, [id]);
+  res.json({ session, items });
+}));
+
+app.put('/api/inventories/:id/items/:assetCode', asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  const assetCode = String(req.params.assetCode || '').trim();
+  if (!Number.isFinite(id) || !assetCode) {
+    res.status(400).json({ error: 'Thiếu đợt kiểm kê hoặc mã tài sản' });
+    return;
+  }
+  const actualStatus = normalizeAssetStatusValue(req.body?.actualStatus || req.body?.actual_status);
+  const checked = req.body?.checked !== false;
+  const note = toNullableText(req.body?.note);
+  const result = await pool.query(`
+    update inventory_items i
+    set
+      actual_status = $3,
+      checked = $4,
+      checked_by = case when $4 then $5 else null end,
+      checked_at = case when $4 then now() else null end,
+      note = $6,
+      updated_at = now()
+    from assets a
+    where i.asset_id = a.id
+      and i.session_id = $1
+      and a.asset_code = $2
+    returning i.id
+  `, [id, assetCode, actualStatus, checked, getActor(req), note]);
+  if (!result.rows.length) {
+    res.status(404).json({ error: 'Không tìm thấy tài sản trong đợt kiểm kê' });
+    return;
+  }
+  await logActivity(req, {
+    action: 'Cập nhật kiểm kê',
+    moduleKey: 'assets',
+    moduleName: 'Quản lý Tài sản',
+    detail: `Cập nhật kiểm kê tài sản ${assetCode}`,
+    metadata: { inventoryId: id, assetCode, actualStatus, checked }
+  });
+  res.json({ ok: true });
 }));
 
 app.get('/api/reports/assets-by-category', asyncHandler(async (_req, res) => {

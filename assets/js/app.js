@@ -109,6 +109,10 @@ const dateFields=new Set(['Ngày sinh','Ngày cấp CCCD','Ngày vào ngành','N
 const genderOptions=['Nam','Nữ'];
 const maritalOptions=['Độc thân','Đã kết hôn'];
 const assetStatusOptions=['Đang sử dụng','Bảo trì','Hư','Tạm dừng'];
+const inventorySessions=[];
+const inventoryItemsBySession={};
+let selectedInventoryId=null;
+let inventoryLoading=false;
 const activityLogs=[];
 let activityLogLoading=false;
 let lastLoggedPage='';
@@ -1772,6 +1776,7 @@ async function deleteAssetCategory(index){
 function switchAssetPanel(panelId){
  $all('#assetTabs .tab').forEach(b=>b.classList.toggle('active',b.dataset.panel===panelId));
  $all('.asset-panel').forEach(p=>p.classList.toggle('active',p.id===panelId));
+ if(panelId==='assetCheck')renderInventory();
 }
 function renderOrgTree(){
  const tree=$('#orgTree');
@@ -1833,6 +1838,7 @@ function renderAssets(){
  }
  renderAssetRows();
  renderAssetForm('#assetForm');
+ renderInventory();
  switchAssetPanel(visibleTabs[0].panel);
 }
 function renderAssetRows(){
@@ -2010,6 +2016,208 @@ async function deleteSelectedAssets(){
  toast('Đã xóa tài sản đã chọn');
 }
 
+function normalizeInventorySession(session){
+ return {
+  id:String(session.id),
+  name:session.name||'Đợt kiểm kê tài sản',
+  date:formatApiDate(session.inventory_date||session.date),
+  status:session.status||'Đang kiểm kê',
+  note:session.note||'',
+  createdBy:session.created_by||session.createdBy||'',
+  total:Number(session.total_items||session.total||0),
+  checked:Number(session.checked_items||session.checked||0),
+  changed:Number(session.changed_items||session.changed||0)
+ };
+}
+function normalizeInventoryItem(item){
+ return {
+  id:item.asset_code||item.id||'',
+  name:item.name||'',
+  type:item.category||item.type||'',
+  owner:item.owner||'',
+  unit:item.team||item.unit||'',
+  expectedStatus:item.expected_status||item.expectedStatus||'Đang sử dụng',
+  actualStatus:item.actual_status||item.actualStatus||item.expected_status||item.status||'Đang sử dụng',
+  checked:Boolean(item.checked),
+  note:item.note||''
+ };
+}
+function getTodayInputValue(){
+ return new Date().toISOString().slice(0,10);
+}
+function setInventoryDefaults(){
+ const dateInput=$('#inventoryDate');
+ const nameInput=$('#inventoryName');
+ if(dateInput && !dateInput.value)dateInput.value=getTodayInputValue();
+ if(nameInput && !nameInput.value){
+  const date=new Date();
+  nameInput.placeholder=`Kiểm kê tài sản ${date.toLocaleDateString('vi-VN')}`;
+ }
+}
+function getSelectedInventory(){
+ return inventorySessions.find(session=>session.id===String(selectedInventoryId));
+}
+async function refreshInventories(selectId=null){
+ if(location.protocol==='file:'){
+  renderInventory();
+  return;
+ }
+ try{
+  inventoryLoading=true;
+  const rows=await fetchApi('/api/inventories');
+  inventorySessions.splice(0,inventorySessions.length,...rows.map(normalizeInventorySession));
+  if(selectId)selectedInventoryId=String(selectId);
+  if(!selectedInventoryId || !inventorySessions.some(session=>session.id===String(selectedInventoryId))){
+   selectedInventoryId=inventorySessions[0]?.id||null;
+  }
+  if(selectedInventoryId)await loadInventoryDetail(selectedInventoryId,true);
+ }catch(error){
+  toast(error.message || 'Không tải được dữ liệu kiểm kê');
+ }finally{
+  inventoryLoading=false;
+  renderInventory();
+ }
+}
+async function loadInventoryDetail(id,force=false){
+ const sessionId=String(id);
+ if(!sessionId)return;
+ if(inventoryItemsBySession[sessionId] && !force)return;
+ if(location.protocol==='file:'){
+  inventoryItemsBySession[sessionId]=assets.map(asset=>normalizeInventoryItem({
+   ...asset,
+   asset_code:asset.id,
+   category:asset.type,
+   team:asset.unit,
+   expected_status:asset.status,
+   actual_status:asset.status,
+   checked:false
+  }));
+  return;
+ }
+ const detail=await fetchApi(`/api/inventories/${encodeURIComponent(sessionId)}`);
+ inventoryItemsBySession[sessionId]=(detail.items||[]).map(normalizeInventoryItem);
+}
+function selectInventory(id){
+ selectedInventoryId=String(id);
+ renderInventory();
+ loadInventoryDetail(selectedInventoryId).then(renderInventory).catch(error=>toast(error.message || 'Không tải được chi tiết kiểm kê'));
+}
+function renderInventory(){
+ setInventoryDefaults();
+ const sessionsEl=$('#inventorySessions');
+ const headEl=$('#inventoryDetailHead');
+ const rowsEl=$('#inventoryRows');
+ if(!sessionsEl || !headEl || !rowsEl)return;
+ if(!inventorySessions.length && !selectedInventoryId && location.protocol==='file:'){
+  inventorySessions.push({id:'demo-1',name:'Kiểm kê tài sản demo',date:new Date().toLocaleDateString('vi-VN'),status:'Đang kiểm kê',note:'Dữ liệu demo cục bộ',createdBy:'admin',total:assets.length,checked:0,changed:0});
+  selectedInventoryId='demo-1';
+ }
+ if(!selectedInventoryId && inventorySessions[0])selectedInventoryId=inventorySessions[0].id;
+ sessionsEl.innerHTML=inventorySessions.length?inventorySessions.map(session=>{
+  const progress=session.total?Math.round((session.checked/session.total)*100):0;
+  return `<button class="inventory-session ${session.id===String(selectedInventoryId)?'active':''}" data-inventory-id="${escapeHtml(session.id)}" type="button">
+   <span class="inventory-session-title"><i data-lucide="clipboard-list"></i>${escapeHtml(session.name)}</span>
+   <small>${escapeHtml(session.date||'--')} · ${escapeHtml(session.status)}</small>
+   <span class="inventory-progress"><span style="width:${progress}%"></span></span>
+   <span class="inventory-stats"><b>${session.checked}/${session.total}</b><em>${session.changed} lệch</em></span>
+  </button>`;
+ }).join(''):`<div class="inventory-empty"><i data-lucide="clipboard-check"></i><strong>Chưa có đợt kiểm kê</strong><span>Tạo đợt mới để bắt đầu đối chiếu tài sản.</span></div>`;
+ $all('[data-inventory-id]').forEach(button=>button.onclick=()=>selectInventory(button.dataset.inventoryId));
+ const session=getSelectedInventory();
+ if(!session){
+  headEl.innerHTML=`<div><h3>Chưa chọn đợt kiểm kê</h3><p class="section-note">Tạo hoặc chọn một đợt kiểm kê để xem danh sách tài sản.</p></div>`;
+  rowsEl.innerHTML='<tr><td colspan="7">Chưa có dữ liệu kiểm kê.</td></tr>';
+  refreshIcons();
+  return;
+ }
+ const items=inventoryItemsBySession[String(session.id)];
+ const progress=session.total?Math.round((session.checked/session.total)*100):0;
+ headEl.innerHTML=`
+  <div>
+   <span class="section-chip"><i data-lucide="scan-line"></i>${escapeHtml(session.status)}</span>
+   <h3>${escapeHtml(session.name)}</h3>
+   <p class="section-note">${escapeHtml(session.date||'--')}${session.note?` · ${escapeHtml(session.note)}`:''}</p>
+  </div>
+  <div class="inventory-summary">
+   <span><strong>${session.total}</strong><small>Tài sản</small></span>
+   <span><strong>${session.checked}</strong><small>Đã kiểm</small></span>
+   <span><strong>${session.changed}</strong><small>Sai lệch</small></span>
+   <span><strong>${progress}%</strong><small>Tiến độ</small></span>
+  </div>`;
+ if(!items){
+  rowsEl.innerHTML='<tr><td colspan="7">Đang tải chi tiết kiểm kê...</td></tr>';
+  loadInventoryDetail(session.id).then(renderInventory).catch(error=>toast(error.message || 'Không tải được chi tiết kiểm kê'));
+  refreshIcons();
+  return;
+ }
+ rowsEl.innerHTML=items.length?items.map(item=>{
+  const changed=item.checked && item.actualStatus!==item.expectedStatus;
+  return `<tr class="${changed?'inventory-row-changed':''}">
+   <td><span class="code-pill">${escapeHtml(item.id)}</span></td>
+   <td><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.type||'--')} · ${escapeHtml(item.unit||'Chưa gán đơn vị')}</small></td>
+   <td>${escapeHtml(item.owner||'--')}</td>
+   <td><span class="badge ${item.expectedStatus==='Đang sử dụng'?'ok':'warn'}">${escapeHtml(item.expectedStatus)}</span></td>
+   <td><select data-inventory-status="${escapeHtml(item.id)}">${assetStatusOptions.map(status=>`<option value="${escapeHtml(status)}" ${status===item.actualStatus?'selected':''}>${escapeHtml(status)}</option>`).join('')}</select></td>
+   <td><input data-inventory-note="${escapeHtml(item.id)}" value="${escapeHtml(item.note)}" placeholder="Ghi chú kiểm kê"/></td>
+   <td><button class="ghost icon-button" data-save-inventory-item="${escapeHtml(item.id)}" type="button"><i data-lucide="check-circle-2"></i>${item.checked?'Cập nhật':'Đã kiểm'}</button></td>
+  </tr>`;
+ }).join(''):'<tr><td colspan="7">Đợt kiểm kê chưa có tài sản.</td></tr>';
+ $all('[data-save-inventory-item]').forEach(button=>button.onclick=()=>saveInventoryItem(button.dataset.saveInventoryItem));
+ refreshIcons();
+}
+async function createInventory(){
+ if(!isAdminUser()){toast('Chỉ Admin được tạo đợt kiểm kê');return}
+ const name=$('#inventoryName')?.value.trim() || '';
+ const inventoryDate=$('#inventoryDate')?.value || getTodayInputValue();
+ const note=$('#inventoryNote')?.value.trim() || '';
+ if(location.protocol!=='file:'){
+  try{
+   const result=await sendApi('/api/inventories','POST',{name,inventoryDate,note});
+   $('#inventoryName').value='';
+   $('#inventoryNote').value='';
+   await refreshInventories(result.id);
+  }catch(error){
+   toast(error.message || 'Không tạo được đợt kiểm kê');
+   return;
+  }
+ }else{
+  const id=`demo-${Date.now()}`;
+  const session={id,name:name||`Kiểm kê tài sản ${new Date().toLocaleDateString('vi-VN')}`,date:fromDateInputValue(inventoryDate),status:'Đang kiểm kê',note,createdBy:currentUser?.u||'admin',total:assets.length,checked:0,changed:0};
+  inventorySessions.unshift(session);
+  inventoryItemsBySession[id]=assets.map(asset=>normalizeInventoryItem({...asset,asset_code:asset.id,category:asset.type,team:asset.unit,expected_status:asset.status,actual_status:asset.status,checked:false}));
+  selectedInventoryId=id;
+  renderInventory();
+ }
+ toast('Đã tạo đợt kiểm kê');
+}
+async function saveInventoryItem(assetCode){
+ const session=getSelectedInventory();
+ if(!session || !assetCode)return;
+ const status=$all('[data-inventory-status]').find(input=>input.dataset.inventoryStatus===assetCode)?.value || 'Đang sử dụng';
+ const note=$all('[data-inventory-note]').find(input=>input.dataset.inventoryNote===assetCode)?.value || '';
+ if(location.protocol!=='file:'){
+  try{
+   await sendApi(`/api/inventories/${encodeURIComponent(session.id)}/items/${encodeURIComponent(assetCode)}`,'PUT',{actualStatus:status,note,checked:true});
+   await refreshInventories(session.id);
+  }catch(error){
+   toast(error.message || 'Không lưu được kiểm kê');
+   return;
+  }
+ }else{
+  const items=inventoryItemsBySession[String(session.id)]||[];
+  const item=items.find(row=>row.id===assetCode);
+  if(item){
+   item.actualStatus=status;
+   item.note=note;
+   item.checked=true;
+   session.checked=items.filter(row=>row.checked).length;
+   session.changed=items.filter(row=>row.checked && row.actualStatus!==row.expectedStatus).length;
+  }
+  renderInventory();
+ }
+ toast('Đã lưu kiểm kê tài sản');
+}
+
 function getModuleLabel(key){
  return moduleDefinitions.find(module=>module.key===key)?.name || key || '--';
 }
@@ -2165,7 +2373,7 @@ function refreshTeamsFromData(apiTeams=[]){
 async function loadDataFromDatabase(){
  if(location.protocol==='file:')return false;
  try{
-  const [apiAccounts,apiStaff,apiAssets,apiCategories,apiCatalogs,apiUserPerms,apiModules,apiPermissions,apiTeams]=await Promise.all([
+  const [apiAccounts,apiStaff,apiAssets,apiCategories,apiCatalogs,apiUserPerms,apiModules,apiPermissions,apiTeams,apiInventories]=await Promise.all([
    fetchApi('/api/accounts'),
    fetchApi('/api/staff'),
    fetchApi('/api/assets'),
@@ -2174,7 +2382,8 @@ async function loadDataFromDatabase(){
    fetchApi('/api/user-permissions'),
    fetchApi('/api/modules'),
    fetchApi('/api/permissions'),
-   fetchApi('/api/teams')
+   fetchApi('/api/teams'),
+   fetchApi('/api/inventories')
   ]);
   rebuildModuleDefinitions(apiModules);
   perms.splice(0,perms.length,...apiPermissions.map(permission=>permission.name));
@@ -2249,6 +2458,11 @@ async function loadDataFromDatabase(){
   Object.keys(accountPerms).forEach(key=>delete accountPerms[key]);
   Object.assign(accountPerms,apiUserPerms||{});
   teamCatalog.splice(0,teamCatalog.length,...(apiTeams||[]));
+  inventorySessions.splice(0,inventorySessions.length,...(apiInventories||[]).map(normalizeInventorySession));
+  Object.keys(inventoryItemsBySession).forEach(key=>delete inventoryItemsBySession[key]);
+  if(!selectedInventoryId || !inventorySessions.some(session=>session.id===String(selectedInventoryId))){
+   selectedInventoryId=inventorySessions[0]?.id||null;
+  }
   refreshTeamsFromData(apiCatalogs.teams||[]);
   if(!accounts.some(account=>account.u===selectedRole))selectedRole=accounts[0]?.u||'admin';
   if(!teams.some(team=>team.name===selectedStaffTeam))selectedStaffTeam=teams[0]?.name||'';
@@ -2322,7 +2536,7 @@ $('#importAssets').onclick=openAssetImport;
 $('#assetExcelInput').onchange=importAssetsFromExcel;
 $('#closeAssetModal').onclick=$('#cancelAssetEdit').onclick=()=>$('#assetModal').classList.remove('show');
 $('#updateAsset').onclick=updateAsset;
-$('#createInventory').onclick=()=>toast('Đã tạo đợt kiểm kê mẫu');
+$('#createInventory').onclick=createInventory;
 ['#activityUserFilter','#activityModuleFilter','#activityActionFilter','#activityDateFrom','#activityDateTo'].forEach(selector=>{
  const input=$(selector);
  if(input)input.onchange=refreshActivityLogs;

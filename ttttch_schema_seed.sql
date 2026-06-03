@@ -1,5 +1,7 @@
 BEGIN;
 
+DROP TABLE IF EXISTS inventory_items CASCADE;
+DROP TABLE IF EXISTS inventory_sessions CASCADE;
 DROP TABLE IF EXISTS asset_assignments CASCADE;
 DROP TABLE IF EXISTS assets CASCADE;
 DROP TABLE IF EXISTS asset_categories CASCADE;
@@ -153,6 +155,32 @@ CREATE TABLE asset_assignments (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE inventory_sessions (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  inventory_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  status TEXT NOT NULL DEFAULT 'Đang kiểm kê',
+  note TEXT,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE inventory_items (
+  id BIGSERIAL PRIMARY KEY,
+  session_id BIGINT NOT NULL REFERENCES inventory_sessions(id) ON DELETE CASCADE,
+  asset_id BIGINT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  expected_status TEXT,
+  actual_status TEXT,
+  checked BOOLEAN NOT NULL DEFAULT false,
+  checked_by TEXT,
+  checked_at TIMESTAMPTZ,
+  note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(session_id, asset_id)
+);
+
 CREATE INDEX idx_users_username ON users(username);
 CREATE INDEX idx_users_status ON users(status);
 CREATE INDEX idx_assets_category_id ON assets(category_id);
@@ -160,6 +188,8 @@ CREATE INDEX idx_assets_status ON assets(status);
 CREATE INDEX idx_assets_manager_user_id ON assets(manager_user_id);
 CREATE INDEX idx_assets_team_id ON assets(team_id);
 CREATE INDEX idx_staff_profiles_user_id ON staff_profiles(user_id);
+CREATE INDEX idx_inventory_sessions_date ON inventory_sessions(inventory_date DESC, id DESC);
+CREATE INDEX idx_inventory_items_session ON inventory_items(session_id);
 
 INSERT INTO positions (name) VALUES
   ('Cán bộ'),
