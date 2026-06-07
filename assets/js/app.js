@@ -315,11 +315,34 @@ function writeWindowSession(username=''){
   window.name=username?JSON.stringify({ttttchCurrentUser:username}):'';
  }
 }
+function readHashSession(){
+ try{
+  const params=new URLSearchParams(String(location.hash||'').replace(/^#/,''));
+  return params.get(sessionUserKey)||'';
+ }catch(_error){
+  return '';
+ }
+}
+function writeHashSession(username=''){
+ try{
+  const url=new URL(location.href);
+  if(username){
+   const params=new URLSearchParams(String(url.hash||'').replace(/^#/,''));
+   params.set(sessionUserKey,username);
+   url.hash=params.toString();
+  }else{
+   const params=new URLSearchParams(String(url.hash||'').replace(/^#/,''));
+   params.delete(sessionUserKey);
+   url.hash=params.toString();
+  }
+  history.replaceState(null,'',url.href);
+ }catch(_error){}
+}
 function readStoredSession(){
  try{
-  return localStorage.getItem(sessionUserKey) || sessionStorage.getItem(sessionUserKey) || readWindowSession();
+  return localStorage.getItem(sessionUserKey) || sessionStorage.getItem(sessionUserKey) || readWindowSession() || readHashSession();
  }catch(_error){
-  return readWindowSession();
+  return readWindowSession() || readHashSession();
  }
 }
 function setLoginSession(username){
@@ -327,11 +350,13 @@ function setLoginSession(username){
  try{localStorage.setItem(sessionUserKey,username)}catch(_error){}
  try{sessionStorage.setItem(sessionUserKey,username)}catch(_error){}
  writeWindowSession(username);
+ writeHashSession(username);
 }
 function clearLoginSession(){
  try{localStorage.removeItem(sessionUserKey)}catch(_error){}
  try{sessionStorage.removeItem(sessionUserKey)}catch(_error){}
  writeWindowSession('');
+ writeHashSession('');
 }
 function activateUserSession(account,{restore=false}={}){
  currentUser=account;
