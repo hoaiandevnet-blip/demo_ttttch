@@ -25,7 +25,8 @@ const assets=[
 const assetCategories=['PC','Màn hình','Bàn phím','Chuột','Xe máy','Flycam','Di động','Ô tô','Máy chiếu'];
 const teams=[
  {name:'Đội trang bị',staff:['Nguyễn Văn A','Trần Thị B']},
- {name:'Đội tổng hợp',staff:['Lê Văn C']}
+ {name:'Đội tổng hợp',staff:['Lê Văn C']},
+ {name:'Trạm tổng hợp',staff:[]}
 ];
 const staffTabs={
  'Thông tin cá nhân':['Họ và tên','Ngày sinh','Giới tính','Dân tộc','Số CCCD','Ngày cấp CCCD','Nơi thường trú','Nơi ở hiện nay'],
@@ -68,7 +69,7 @@ const defaultModuleDefinitions=[
  {key:'permissions',name:'Hệ thống & Phân quyền',description:'Quản trị tài khoản, nhóm người dùng và quyền chức năng',icon:'shield-check',visible:true,isAdminOnly:true,custom:false},
  {key:'staffDirectory',name:'Quản lý cán bộ',description:'Quản lý cán bộ theo đội, xem số hiệu, số điện thoại và hồ sơ chi tiết',icon:'users-round',visible:true,isAdminOnly:true,custom:false},
  {key:'catalogManager',name:'Quản lý danh mục',description:'Thêm, sửa, xóa chức vụ và chức hàm',icon:'list-plus',visible:true,isAdminOnly:true,custom:false},
- {key:'teamManager',name:'Quản lý đội',description:'Thêm, sửa, xóa đội trực thuộc Phòng PV01',icon:'users-round',visible:true,isAdminOnly:true,custom:false},
+ {key:'teamManager',name:'Quản lý đơn vị',description:'Tạo cấp phòng, cấp xã và quản lý các đội trực thuộc',icon:'building-2',visible:true,isAdminOnly:true,custom:false},
  {key:'moduleManager',name:'Quản lý module',description:'Thiết lập module được hiển thị cho tài khoản cán bộ',icon:'layout-dashboard',visible:true,isAdminOnly:true,custom:false},
  {key:'assetCategoryManager',name:'Danh mục tài sản',description:'Quản lý loại tài sản và theo dõi trạng thái thiết bị',icon:'boxes',visible:true,isAdminOnly:true,custom:false},
  {key:'reports',name:'Báo cáo',description:'Thống kê thiết bị và tình hình bàn giao theo đội',icon:'chart-column',visible:true,isAdminOnly:true,custom:false},
@@ -82,7 +83,7 @@ const permissionModuleMap={
  'Quản lý hồ sơ cán bộ':'staff',
  'Quản lý tài sản':'assets'
 };
-const accountImportColumns=['Tên đăng nhập','Mật khẩu','Họ tên','Số điện thoại','Cấp bậc','Chức vụ','Đội','Trạng thái'];
+const accountImportColumns=['Tên đăng nhập','Mật khẩu','Họ tên','Số điện thoại','Cấp bậc','Chức vụ','Loại đơn vị','Đơn vị','Đội/Trạm','Trạng thái'];
 const assetImportColumns=['Mã tài sản','Tên tài sản','Chủng loại','Hiện trạng','Nguyên giá','Ngày nhận','Đơn vị quản lý','Người quản lý','Ghi chú'];
 const catalogs={
  positions:['Cán bộ','Đội trưởng','Phó đội trưởng'],
@@ -90,6 +91,7 @@ const catalogs={
 };
 const assetTabs=['Thu hồi/Tiếp nhận','Danh sách tài sản','Lập mới tài sản','Kiểm kê'];
 const assetPanels=['assetReceive','assetList','assetAdd','assetCheck'];
+const sessionUserKey='ttttchCurrentUser';
 let currentUser=null;
 let selectedRole='admin';
 let permissionsDirty=false;
@@ -102,7 +104,15 @@ let selectedTeam='Đội trang bị';
 let selectedStaffTeam='Đội trang bị';
 let selectedAssetCategory='PC';
 let selectedAssetStatus='all';
-let teamCatalog=[];
+let departmentCatalog=[
+ {id:1,name:'Phòng PV01',unit_type:'Cấp phòng',team_count:2,staff_count:3,asset_count:assets.length},
+ {id:2,name:'Công an xã mẫu',unit_type:'Cấp xã',team_count:1,staff_count:0,asset_count:0}
+];
+let teamCatalog=[
+ {id:1,name:'Đội trang bị',department_id:1,department:'Phòng PV01',unit_type:'Cấp phòng',staff_count:2,asset_count:assets.filter(asset=>asset.unit==='Đội trang bị').length},
+ {id:2,name:'Đội tổng hợp',department_id:1,department:'Phòng PV01',unit_type:'Cấp phòng',staff_count:1,asset_count:assets.filter(asset=>asset.unit==='Đội tổng hợp').length},
+ {id:3,name:'Trạm tổng hợp',department_id:2,department:'Công an xã mẫu',unit_type:'Cấp xã',staff_count:0,asset_count:0}
+];
 const appearanceDefaults={theme:'light',accent:'crimson',density:'comfortable',motion:true};
 let appearanceSettings={...appearanceDefaults};
 const dateFields=new Set(['Ngày sinh','Ngày cấp CCCD','Ngày vào ngành','Ngày tải lên','Ngày nhận']);
@@ -160,6 +170,44 @@ function bindBulkSelection(buttonSelector, checkboxSelector){
  updateBulkDeleteButton(buttonSelector,checkboxSelector);
 }
 function refreshIcons(){if(window.lucide)window.lucide.createIcons()}
+function normalizeUnitText(unitType){
+ return unitType==='Cấp xã'?'Cấp xã':'Cấp phòng';
+}
+function getAssignmentName(unitType){
+ return normalizeUnitText(unitType)==='Cấp xã'?'trạm':'đội';
+}
+function recalculateOrgStats(){
+ teamCatalog.forEach(team=>{
+  const teamName=team.name;
+  const staffFromAccounts=accounts.filter(account=>account.u!=='admin' && account.team===teamName).length;
+  const legacyTeam=teams.find(item=>item.name===teamName);
+  team.staff_count=staffFromAccounts || legacyTeam?.staff?.length || 0;
+  team.asset_count=assets.filter(asset=>asset.unit===teamName).length;
+ });
+ departmentCatalog.forEach(department=>{
+  const relatedTeams=teamCatalog.filter(team=>String(team.department_id||'')===String(department.id));
+  department.team_count=relatedTeams.length;
+  department.staff_count=relatedTeams.reduce((sum,team)=>sum+(team.staff_count||0),0);
+  department.asset_count=relatedTeams.reduce((sum,team)=>sum+(team.asset_count||0),0);
+ });
+}
+function saveLocalOrgData(){
+ if(location.protocol!=='file:')return;
+ localStorage.setItem('ttttchOrgData',JSON.stringify({departments:departmentCatalog,teams:teamCatalog}));
+}
+function loadLocalOrgData(){
+ if(location.protocol!=='file:')return;
+ try{
+  const stored=JSON.parse(localStorage.getItem('ttttchOrgData')||'{}');
+  if(Array.isArray(stored.departments) && Array.isArray(stored.teams)){
+   departmentCatalog.splice(0,departmentCatalog.length,...stored.departments);
+   teamCatalog.splice(0,teamCatalog.length,...stored.teams);
+   recalculateOrgStats();
+  }
+ }catch(error){
+  console.warn('Không đọc được dữ liệu đơn vị localStorage',error);
+ }
+}
 function loadAppearanceSettings(){
  try{
   const stored=JSON.parse(localStorage.getItem('ttttchAppearance')||'{}');
@@ -224,7 +272,7 @@ function getStaffProfile(username){
  if(!profile && account && account.u!=='admin'){
   profile={username,photo:'',sections:{
    'Thông tin cá nhân':{'Họ và tên':account.name,'Số điện thoại':account.phone},
-   'Thông tin công tác':{'Chức vụ hiện tại':account.pos,'Cấp bậc':account.rank},
+   'Thông tin công tác':{'Đơn vị công tác':account.team,'Chức vụ hiện tại':account.pos,'Cấp bậc':account.rank},
    'Trình độ đào tạo':{},
    'Thông tin khác':{},
    'Tài liệu số hóa':{}
@@ -235,14 +283,59 @@ function getStaffProfile(username){
 }
 
 function renderLogin(){
- $('#loginAccount').innerHTML=accounts.map(a=>`<option value="${a.u}">${a.name} - ${a.role}</option>`).join('');
+ const input=$('#loginAccount');
+ if(input)input.placeholder='VD: admin';
 }
-function login(event){
- event.preventDefault();
- const account=accounts.find(a=>a.u===$('#loginAccount').value);
- if(!account || account.password!==$('#loginPassword').value){toast('Sai tài khoản hoặc mật khẩu');return}
- if(account.status!=='Hoạt động'){toast('Tài khoản đang bị tạm khóa');return}
+function sanitizeUsernameInput(value){
+ return String(value||'').trim().toLowerCase().replace(/\s+/g,'');
+}
+function isValidUsername(value){
+ return /^[a-z0-9._-]{3,32}$/.test(String(value||''));
+}
+function getUsernameError(value){
+ if(!value)return 'Vui lòng nhập tên đăng nhập';
+ if(!isValidUsername(value))return 'Tên đăng nhập chỉ dùng chữ thường không dấu, số, dấu chấm, gạch dưới hoặc gạch ngang, dài 3-32 ký tự';
+ return '';
+}
+function readWindowSession(){
+ try{
+  const data=JSON.parse(window.name||'{}');
+  return data?.ttttchCurrentUser||'';
+ }catch(_error){
+  return '';
+ }
+}
+function writeWindowSession(username=''){
+ try{
+  const data=JSON.parse(window.name||'{}');
+  if(username)data.ttttchCurrentUser=username;
+  else delete data.ttttchCurrentUser;
+  window.name=Object.keys(data).length?JSON.stringify(data):'';
+ }catch(_error){
+  window.name=username?JSON.stringify({ttttchCurrentUser:username}):'';
+ }
+}
+function readStoredSession(){
+ try{
+  return localStorage.getItem(sessionUserKey) || sessionStorage.getItem(sessionUserKey) || readWindowSession();
+ }catch(_error){
+  return readWindowSession();
+ }
+}
+function setLoginSession(username){
+ if(!username)return;
+ try{localStorage.setItem(sessionUserKey,username)}catch(_error){}
+ try{sessionStorage.setItem(sessionUserKey,username)}catch(_error){}
+ writeWindowSession(username);
+}
+function clearLoginSession(){
+ try{localStorage.removeItem(sessionUserKey)}catch(_error){}
+ try{sessionStorage.removeItem(sessionUserKey)}catch(_error){}
+ writeWindowSession('');
+}
+function activateUserSession(account,{restore=false}={}){
  currentUser=account;
+ setLoginSession(account.u);
  $('#loginScreen').classList.add('hidden');
  $('#appShell').classList.remove('locked');
  $('#currentUser').textContent=account.name;
@@ -251,14 +344,35 @@ function login(event){
  loadStaffDataForCurrentUser();
  updateAdminVisibility();
  updateModuleVisibility();
- if(account.u==='admin'){showPage('permissions')}else{showPage(getFirstUserPage())}
- recordActivity('Đăng nhập','login','Đăng nhập hệ thống');
+ showPage(account.u==='admin'?'permissions':getFirstUserPage());
+ if(!restore)recordActivity('Đăng nhập','login','Đăng nhập hệ thống');
+}
+function restoreLoginSession(){
+ const username=readStoredSession();
+ if(!username)return false;
+ const account=accounts.find(a=>a.u===username);
+ if(!account || account.status!=='Hoạt động'){
+  clearLoginSession();
+  return false;
+ }
+ activateUserSession(account,{restore:true});
+ return true;
+}
+function login(event){
+ event.preventDefault();
+ const username=sanitizeUsernameInput($('#loginAccount').value);
+ $('#loginAccount').value=username;
+ const account=accounts.find(a=>a.u.toLowerCase()===username);
+ if(!account || account.password!==$('#loginPassword').value){toast('Sai tài khoản hoặc mật khẩu');return}
+ if(account.status!=='Hoạt động'){toast('Tài khoản đang bị tạm khóa');return}
+ activateUserSession(account);
  toast('Đăng nhập thành công');
 }
 function logout(){
  const user=currentUser;
  if(user)recordActivity('Đăng xuất','login','Đăng xuất hệ thống',{username:user.u});
  currentUser=null;
+ clearLoginSession();
  $('#appShell').classList.add('locked');
  $('#loginScreen').classList.remove('hidden');
 }
@@ -353,7 +467,7 @@ function showPage(page){
   staff:['Hồ sơ Cán bộ','Nhập liệu, cập nhật và số hóa thông tin cán bộ'],
   staffDirectory:['Quản lý cán bộ','Quản lý cán bộ theo đội, xem số hiệu, số điện thoại và hồ sơ chi tiết'],
   moduleManager:['Quản lý module','Thiết lập module được hiển thị cho tài khoản cán bộ'],
-  teamManager:['Quản lý đội','Thêm, sửa, xóa đội trực thuộc Phòng PV01'],
+  teamManager:['Quản lý đơn vị','Tạo cấp phòng, cấp xã và quản lý các đội trực thuộc'],
   catalogManager:['Quản lý danh mục','Thêm, sửa, xóa chức vụ và chức hàm'],
   assetCategoryManager:['Danh mục tài sản','Quản lý loại tài sản và theo dõi trạng thái thiết bị'],
   reports:['Báo cáo','Thống kê thiết bị và tình hình bàn giao theo đội'],
@@ -445,11 +559,13 @@ function openUserModal(username=null){
  $('#toggleUserPassword').textContent='Hiện';
  $('#userModalTitle').textContent=username?'Chỉnh sửa tài khoản':'Thêm mới tài khoản';
  const form=$('#newUserForm');
- form.username.disabled=Boolean(username);
+ form.username.disabled=username==='admin' || !isAdminUser();
  form.status.disabled=username==='admin';
  form.phone.disabled=username==='admin';
  form.rank.disabled=username==='admin';
  form.position.disabled=username==='admin';
+ form.unitType.disabled=username==='admin';
+ form.departmentId.disabled=username==='admin';
  form.team.disabled=username==='admin';
  if(username){
   const user=accounts.find(a=>a.u===username);
@@ -460,33 +576,71 @@ function openUserModal(username=null){
   form.rank.value=user.rank;
   form.position.value=user.pos;
   form.team.value=user.team||'';
+  renderUserCatalogOptions(user.team||'');
   form.status.value=user.status;
  }
  $('#userModal').classList.add('show');
 }
-function renderUserCatalogOptions(){
+function getDepartmentForTeam(teamName){
+ const team=teamCatalog.find(item=>item.name===teamName);
+ if(!team)return null;
+ return departmentCatalog.find(department=>String(department.id)===String(team.department_id)) || {
+  id:team.department_id,
+  name:team.department||'',
+  unit_type:team.unit_type||'Cấp phòng'
+ };
+}
+function renderUserCatalogOptions(preferredTeam=''){
  const form=$('#newUserForm');
  const rankValue=form.rank.value;
  const positionValue=form.position.value;
- const teamValue=form.team.value;
+ const teamValue=preferredTeam || form.team.value;
+ const inferredDepartment=getDepartmentForTeam(teamValue);
+ const unitTypeValue=inferredDepartment?.unit_type || form.unitType?.value || 'Cấp phòng';
  form.rank.innerHTML='<option value="">Không áp dụng</option>'+catalogs.ranks.map(item=>`<option>${escapeHtml(item)}</option>`).join('');
  form.position.innerHTML='<option value="">Không áp dụng</option>'+catalogs.positions.map(item=>`<option>${escapeHtml(item)}</option>`).join('');
- form.team.innerHTML='<option value="">Chọn đội</option>'+teamCatalog.map(item=>`<option>${escapeHtml(item.name)}</option>`).join('');
+ if(form.unitType){
+  form.unitType.innerHTML='<option value="Cấp phòng">Cấp phòng</option><option value="Cấp xã">Cấp xã</option>';
+  form.unitType.value=unitTypeValue==='Cấp xã'?'Cấp xã':'Cấp phòng';
+ }
+ const departments=departmentCatalog.filter(department=>(department.unit_type||'Cấp phòng')===(form.unitType?.value||'Cấp phòng'));
+ const selectedDepartmentId=String(inferredDepartment?.id || form.departmentId?.value || departments[0]?.id || '');
+ if(form.departmentId){
+  const emptyLabel=(form.unitType?.value||'Cấp phòng')==='Cấp xã'?'Chưa có cấp xã':'Chưa có cấp phòng';
+  form.departmentId.innerHTML=departments.length
+   ? departments.map(department=>`<option value="${escapeHtml(department.id)}">${escapeHtml(department.name)}</option>`).join('')
+   : `<option value="">${emptyLabel}</option>`;
+  form.departmentId.value=departments.some(department=>String(department.id)===selectedDepartmentId)?selectedDepartmentId:(departments[0]?.id||'');
+ }
+ const isCommune=(form.unitType?.value||'Cấp phòng')==='Cấp xã';
+ const assignmentLabel=isCommune?'Trạm':'Đội';
+ const assignmentLabelNode=$('#userAssignmentLabel');
+ if(assignmentLabelNode)assignmentLabelNode.textContent=assignmentLabel;
+ const selectedDepartment=form.departmentId?.value||'';
+ const assignmentOptions=teamCatalog.filter(item=>String(item.department_id||'')===String(selectedDepartment));
+ form.team.innerHTML=`<option value="">Chọn ${assignmentLabel.toLowerCase()}</option>`+assignmentOptions.map(item=>`<option>${escapeHtml(item.name)}</option>`).join('');
  form.rank.value=catalogs.ranks.includes(rankValue)?rankValue:'';
  form.position.value=catalogs.positions.includes(positionValue)?positionValue:'';
- form.team.value=teamCatalog.some(item=>item.name===teamValue)?teamValue:'';
+ form.team.value=assignmentOptions.some(item=>item.name===teamValue)?teamValue:'';
 }
 async function saveUser(){
  const form=$('#newUserForm');
  if(!form.reportValidity())return;
  const f=new FormData(form);
+ const normalizedUsername=sanitizeUsernameInput(f.get('username')||editingUser||'');
+ form.username.value=normalizedUsername;
+ const usernameError=getUsernameError(normalizedUsername);
+ if(usernameError){toast(usernameError);form.username.focus();return}
  const payload={
-  username:(f.get('username')||editingUser||'').trim(),
+  username:normalizedUsername,
   password:f.get('password')||'123456',
   fullname:f.get('fullname')||'',
   phone:f.get('phone')||'',
   rank:f.get('rank')||'',
   position:f.get('position')||'',
+  unitType:f.get('unitType')||'',
+  departmentId:f.get('departmentId')||'',
+  departmentName:form.departmentId?.selectedOptions?.[0]?.textContent||'',
   team:f.get('team')||'',
   status:f.get('status')||'Hoạt động'
  };
@@ -501,7 +655,12 @@ async function saveUser(){
    }
    const currentUsername=currentUser?.u;
    await loadDataFromDatabase();
-   if(currentUsername)currentUser=accounts.find(account=>account.u===currentUsername)||currentUser;
+   if(currentUsername){
+    currentUser=accounts.find(account=>account.u===currentUsername)||accounts.find(account=>account.u===payload.username)||currentUser;
+    if(currentUser) setLoginSession(currentUser.u);
+   }
+   if(editingUser && selectedRole===editingUser)selectedRole=payload.username;
+   if(editingUser && selectedStaff===editingUser)selectedStaff=payload.username;
    $('#userModal').classList.remove('show');
    renderApp();
    toast(isCreating?'Tạo tài khoản thành công':'Đã cập nhật tài khoản');
@@ -513,6 +672,9 @@ async function saveUser(){
  }
  if(editingUser){
   const user=accounts.find(a=>a.u===editingUser);
+  const oldUsername=user.u;
+  if(payload.username!==oldUsername && accounts.some(a=>a.u===payload.username)){toast('Tên đăng nhập đã tồn tại');return}
+  if(user.u!=='admin')user.u=payload.username;
   user.password=f.get('password');
   user.name=f.get('fullname');
   user.phone=user.u==='admin'?'':f.get('phone')||'';
@@ -521,16 +683,24 @@ async function saveUser(){
   user.team=user.u==='admin'?'':f.get('team');
   user.status=user.u==='admin'?'Hoạt động':f.get('status');
   if(user.u!=='admin'){
-   const profile=getStaffProfile(user.u);
+   const profile=(oldUsername!==user.u && staffProfiles.find(item=>item.username===oldUsername)) || getStaffProfile(user.u);
+   profile.username=user.u;
    profile.sections['Thông tin cá nhân']['Họ và tên']=user.name;
    profile.sections['Thông tin cá nhân']['Số điện thoại']=user.phone;
    profile.sections['Thông tin công tác']['Cấp bậc']=user.rank;
    profile.sections['Thông tin công tác']['Chức vụ hiện tại']=user.pos;
    profile.sections['Thông tin công tác']['Đơn vị công tác']=user.team;
   }
+  if(oldUsername!==user.u){
+   accountPerms[user.u]=accountPerms[oldUsername]||[];
+   delete accountPerms[oldUsername];
+   if(selectedRole===oldUsername)selectedRole=user.u;
+   if(selectedStaff===oldUsername)selectedStaff=user.u;
+   if(currentUser?.u===oldUsername){currentUser=user;setLoginSession(user.u)}
+  }
   if(currentUser?.u===user.u){$('#currentUser').textContent=user.name}
  }else{
-  const username=f.get('username').trim();
+  const username=payload.username;
   if(accounts.some(a=>a.u===username)){toast('Tên đăng nhập đã tồn tại');return}
  accounts.unshift({u:username,password:f.get('password'),name:f.get('fullname'),rank:f.get('rank'),pos:f.get('position'),team:f.get('team'),phone:f.get('phone')||'',status:f.get('status'),role:'Cán bộ nghiệp vụ'});
   accountPerms[username]=[];
@@ -541,17 +711,20 @@ async function saveUser(){
  renderRoles();
  renderLogin();
  renderStaffDirectory();
+ recalculateOrgStats();
+ renderOrgTree();
+ renderTeamAssets();
  toast(editingUser?'Đã cập nhật tài khoản':'Tạo tài khoản thành công');
 }
 function downloadAccountTemplate(){
  if(!window.XLSX){toast('Chưa tải được thư viện Excel');return}
  const rows=[
   accountImportColumns,
-  ['phamvand','123456','Phạm Văn D','0900000004','Thiếu úy','Cán bộ','Đội tổng hợp','Hoạt động'],
-  ['hoangthie','123456','Hoàng Thị E','0900000005','Trung úy','Phó đội trưởng','Đội CNTT','Hoạt động']
+  ['phamvand','123456','Phạm Văn D','0900000004','Thiếu úy','Cán bộ','Cấp phòng','Phòng PV01','Đội tổng hợp','Hoạt động'],
+  ['hoangthie','123456','Hoàng Thị E','0900000005','Trung úy','Phó đội trưởng','Cấp xã','Công an xã mẫu','Trạm tổng hợp','Hoạt động']
  ];
  const worksheet=XLSX.utils.aoa_to_sheet(rows);
- worksheet['!cols']=[{wch:18},{wch:14},{wch:24},{wch:16},{wch:14},{wch:20},{wch:20},{wch:16}];
+ worksheet['!cols']=[{wch:18},{wch:14},{wch:24},{wch:16},{wch:14},{wch:20},{wch:16},{wch:24},{wch:20},{wch:16}];
  const workbook=XLSX.utils.book_new();
  XLSX.utils.book_append_sheet(workbook,worksheet,'Tai_khoan_mau');
  XLSX.writeFile(workbook,'mau_nhap_tai_khoan.xlsx');
@@ -574,10 +747,10 @@ function importAccountsFromExcel(event){
    let added=0, skipped=0;
    const seen=new Set(accounts.map(account=>account.u));
    for(const row of rows){
-    const username=String(row['Tên đăng nhập']||'').trim();
+    const username=sanitizeUsernameInput(row['Tên đăng nhập']||'');
     const password=String(row['Mật khẩu']||'').trim();
     const fullname=String(row['Họ tên']||'').trim();
-    if(!username || !password || !fullname || seen.has(username)){skipped++;continue}
+    if(!username || !isValidUsername(username) || !password || !fullname || seen.has(username)){skipped++;continue}
     const status=String(row['Trạng thái']||'Hoạt động').trim();
     const payload={
      username,
@@ -586,7 +759,9 @@ function importAccountsFromExcel(event){
      phone:String(row['Số điện thoại']||'').trim(),
      rank:String(row['Cấp bậc']||'').trim(),
      position:String(row['Chức vụ']||'').trim(),
-     team:String(row['Đội']||'').trim(),
+     unitType:String(row['Loại đơn vị']||'').trim(),
+     departmentName:String(row['Đơn vị']||'').trim(),
+     team:String(row['Đội/Trạm']||row['Đội']||'').trim(),
      status:status==='Tạm khóa'?'Tạm khóa':'Hoạt động'
     };
     if(location.protocol!=='file:'){
@@ -734,6 +909,7 @@ function renderPerms(username){
   'Báo cáo thống kê':'chart-column',
   'Xuất dữ liệu':'download',
   'Quản lý đội':'users-round',
+  'Quản lý đơn vị':'building-2',
   'Quản lý danh mục':'list-plus',
   'Quản lý module':'layout-dashboard',
   'Quản lý danh mục tài sản':'boxes',
@@ -1214,38 +1390,164 @@ async function toggleModule(key, enabled){
 }
 
 function renderTeamManager(){
- const container=$('#teamManagerList');
- if(!container)return;
- container.innerHTML=teamCatalog.map(team=>`
-  <div class="team-manager-item">
-   <div>
-    <strong>${escapeHtml(team.name)}</strong>
-    <span>${escapeHtml(team.department||'Phòng PV01')} · ${team.staff_count||0} cán bộ · ${team.asset_count||0} tài sản</span>
+ const departmentList=$('#departmentList');
+ const teamList=$('#teamManagerList');
+ const select=$('#teamDepartmentSelect');
+ if(!departmentList || !teamList || !select)return;
+ recalculateOrgStats();
+ $('#unitCountLabel').textContent=`${departmentCatalog.length} đơn vị`;
+ $('#teamCountLabel').textContent=`${teamCatalog.length} đội/trạm`;
+ const previousDepartmentId=select.value;
+ select.innerHTML=departmentCatalog.map(department=>`<option value="${department.id}">${escapeHtml(department.name)} · ${escapeHtml(department.unit_type||'Cấp phòng')}</option>`).join('');
+ if(departmentCatalog.some(department=>String(department.id)===String(previousDepartmentId))){
+  select.value=previousDepartmentId;
+ }else if(departmentCatalog[0]){
+  select.value=departmentCatalog[0].id;
+ }
+ const selectedDepartment=departmentCatalog.find(department=>String(department.id)===String(select.value));
+ const newTeamInput=$('#newTeamManagerName');
+ const newTeamButton=$('#addManagedTeam');
+ if(newTeamInput)newTeamInput.placeholder=`Nhập tên ${getAssignmentName(selectedDepartment?.unit_type)} mới`;
+ if(newTeamButton)newTeamButton.innerHTML=`<i data-lucide="plus"></i>Thêm ${getAssignmentName(selectedDepartment?.unit_type)}`;
+ departmentList.innerHTML=departmentCatalog.map(department=>`
+  <div class="unit-item">
+   <span class="unit-icon"><i data-lucide="${department.unit_type==='Cấp xã'?'map-pin-house':'building-2'}"></i></span>
+   <div class="unit-main">
+    <div class="unit-title-row">
+     <strong>${escapeHtml(department.name)}</strong>
+     <span class="unit-type ${department.unit_type==='Cấp xã'?'commune':'room'}">${escapeHtml(department.unit_type||'Cấp phòng')}</span>
+    </div>
+    <small>${department.team_count||0} ${getAssignmentName(department.unit_type)} · ${department.staff_count||0} cán bộ · ${department.asset_count||0} tài sản</small>
    </div>
    <div class="catalog-actions">
-    <button class="link-btn icon-button" data-edit-team="${team.id}" type="button"><i data-lucide="square-pen"></i>Sửa</button>
-    <button class="link-btn icon-button" data-delete-team="${team.id}" type="button"><i data-lucide="trash-2"></i>Xóa</button>
+    <button class="mini-action" data-edit-department="${department.id}" title="Sửa đơn vị" type="button"><i data-lucide="square-pen"></i></button>
+    <button class="mini-action danger-action" data-delete-department="${department.id}" title="Xóa đơn vị" type="button"><i data-lucide="trash-2"></i></button>
    </div>
-  </div>`).join('') || '<p class="section-note">Chưa có đội nào.</p>';
+  </div>`).join('') || '<p class="section-note">Chưa có cấp phòng/cấp xã nào.</p>';
+ const teamsByDepartment=new Map();
+ teamCatalog.forEach(team=>{
+  const key=String(team.department_id || 'none');
+  if(!teamsByDepartment.has(key))teamsByDepartment.set(key,[]);
+  teamsByDepartment.get(key).push(team);
+ });
+ teamList.innerHTML=departmentCatalog.map(department=>{
+  const teamsInDepartment=teamsByDepartment.get(String(department.id))||[];
+ return `<div class="team-group">
+   <div class="team-group-head"><span><i data-lucide="${department.unit_type==='Cấp xã'?'map-pin-house':'building-2'}"></i>${escapeHtml(department.name)}</span><b>${teamsInDepartment.length} ${getAssignmentName(department.unit_type)}</b></div>
+   <div class="team-group-list">
+    ${teamsInDepartment.map(team=>`
+     <div class="team-manager-item">
+      <span class="team-item-icon"><i data-lucide="${department.unit_type==='Cấp xã'?'map-pinned':'users-round'}"></i></span>
+      <div>
+       <strong>${escapeHtml(team.name)}</strong>
+       <span>${escapeHtml(team.unit_type||department.unit_type||'Cấp phòng')} · ${team.staff_count||0} cán bộ · ${team.asset_count||0} tài sản</span>
+      </div>
+      <div class="catalog-actions">
+       <button class="mini-action" data-edit-team="${team.id}" title="Sửa ${getAssignmentName(department.unit_type)}" type="button"><i data-lucide="square-pen"></i></button>
+       <button class="mini-action danger-action" data-delete-team="${team.id}" title="Xóa ${getAssignmentName(department.unit_type)}" type="button"><i data-lucide="trash-2"></i></button>
+      </div>
+     </div>`).join('') || `<p class="section-note">Chưa có ${getAssignmentName(department.unit_type)} trực thuộc đơn vị này.</p>`}
+   </div>
+  </div>`;
+ }).join('') || '<p class="section-note">Tạo cấp phòng hoặc cấp xã trước khi thêm đội.</p>';
+ $all('[data-edit-department]').forEach(button=>button.onclick=()=>editDepartment(Number(button.dataset.editDepartment)));
+ $all('[data-delete-department]').forEach(button=>button.onclick=()=>deleteDepartment(Number(button.dataset.deleteDepartment)));
  $all('[data-edit-team]').forEach(button=>button.onclick=()=>editManagedTeam(Number(button.dataset.editTeam)));
  $all('[data-delete-team]').forEach(button=>button.onclick=()=>deleteManagedTeam(Number(button.dataset.deleteTeam)));
  refreshIcons();
 }
-async function addManagedTeam(){
- const input=$('#newTeamManagerName');
- const name=input.value.trim();
- if(!name){toast('Vui lòng nhập tên đội');return}
+async function addDepartment(){
+ const nameInput=$('#newDepartmentName');
+ const typeInput=$('#newDepartmentType');
+ const name=nameInput.value.trim();
+ const unitType=typeInput.value;
+ if(!name){toast('Vui lòng nhập tên đơn vị');return}
  if(location.protocol!=='file:'){
   try{
-   await sendApi('/api/teams','POST',{name});
+   await sendApi('/api/departments','POST',{name,unitType});
+   await loadDataFromDatabase();
+  }catch(error){
+   toast(error.message || 'Không thêm được đơn vị');
+   return;
+  }
+ }else{
+  departmentCatalog.push({id:Date.now(),name,unit_type:unitType,team_count:0,staff_count:0,asset_count:0});
+  saveLocalOrgData();
+ }
+ nameInput.value='';
+ renderTeamManager();
+ toast('Đã thêm đơn vị');
+}
+async function editDepartment(id){
+ const department=departmentCatalog.find(item=>Number(item.id)===id);
+ if(!department)return;
+ const nameValue=prompt('Tên đơn vị',department.name);
+ if(nameValue===null)return;
+ const name=nameValue.trim();
+ if(!name){toast('Tên đơn vị không được trống');return}
+ const typeValue=prompt('Loại đơn vị: Cấp phòng hoặc Cấp xã',department.unit_type||'Cấp phòng');
+ if(typeValue===null)return;
+ const unitType=typeValue.trim()==='Cấp xã'?'Cấp xã':'Cấp phòng';
+ if(location.protocol!=='file:'){
+  try{
+   await sendApi(`/api/departments/${id}`,'PUT',{name,unitType});
+   await loadDataFromDatabase();
+  }catch(error){
+   toast(error.message || 'Không sửa được đơn vị');
+   return;
+  }
+ }else{
+  department.name=name;
+  department.unit_type=unitType;
+  teamCatalog.filter(team=>String(team.department_id||'')===String(id)).forEach(team=>{team.department=name;team.unit_type=unitType});
+  saveLocalOrgData();
+ }
+ renderTeamManager();
+ toast('Đã cập nhật đơn vị');
+}
+async function deleteDepartment(id){
+ const department=departmentCatalog.find(item=>Number(item.id)===id);
+ if(!department)return;
+ if(!confirm(`Xóa đơn vị "${department.name}"?`))return;
+ if(location.protocol!=='file:'){
+  try{
+   await sendApi(`/api/departments/${id}`,'DELETE',{});
+   await loadDataFromDatabase();
+  }catch(error){
+   toast(error.message || 'Không xóa được đơn vị');
+   return;
+  }
+}else{
+  if(teamCatalog.some(team=>String(team.department_id||'')===String(id))){
+   toast('Không thể xóa đơn vị đang có đội/trạm trực thuộc');
+   return;
+  }
+  const index=departmentCatalog.findIndex(item=>Number(item.id)===id);
+  if(index>=0)departmentCatalog.splice(index,1);
+  saveLocalOrgData();
+ }
+ renderTeamManager();
+ toast('Đã xóa đơn vị');
+}
+async function addManagedTeam(){
+ const input=$('#newTeamManagerName');
+ const departmentId=Number($('#teamDepartmentSelect')?.value)||departmentCatalog[0]?.id;
+ const name=input.value.trim();
+ if(!name){toast('Vui lòng nhập tên đội');return}
+ if(!departmentId){toast('Vui lòng tạo hoặc chọn đơn vị trước');return}
+ if(location.protocol!=='file:'){
+  try{
+   await sendApi('/api/teams','POST',{name,departmentId});
    await loadDataFromDatabase();
   }catch(error){
    toast(error.message || 'Không thêm được đội');
    return;
   }
  }else{
+  const department=departmentCatalog.find(item=>Number(item.id)===Number(departmentId));
   teams.push({name,staff:[]});
-  teamCatalog.push({id:Date.now(),name,department:'Phòng PV01',staff_count:0,asset_count:0});
+  teamCatalog.push({id:Date.now(),name,department_id:departmentId,department:department?.name||'',unit_type:department?.unit_type||'Cấp phòng',staff_count:0,asset_count:0});
+  saveLocalOrgData();
  }
  input.value='';
  renderTeamManager();
@@ -1263,7 +1565,7 @@ async function editManagedTeam(id){
  if(!name){toast('Tên đội không được trống');return}
  if(location.protocol!=='file:'){
   try{
-   await sendApi(`/api/teams/${id}`,'PUT',{name});
+   await sendApi(`/api/teams/${id}`,'PUT',{name,departmentId:team.department_id});
    await loadDataFromDatabase();
   }catch(error){
    toast(error.message || 'Không sửa được đội');
@@ -1273,6 +1575,7 @@ async function editManagedTeam(id){
   team.name=name;
   const localTeam=teams.find(item=>item.name===oldName);
   if(localTeam)localTeam.name=name;
+  saveLocalOrgData();
  }
  renderTeamManager();
  renderStaffDirectory();
@@ -1296,6 +1599,7 @@ async function deleteManagedTeam(id){
   if(teamIndex>=0)teamCatalog.splice(teamIndex,1);
   const localIndex=teams.findIndex(item=>item.name===team.name);
   if(localIndex>=0)teams.splice(localIndex,1);
+  saveLocalOrgData();
  }
  renderTeamManager();
  renderStaffDirectory();
@@ -1781,25 +2085,44 @@ function switchAssetPanel(panelId){
 function renderOrgTree(){
  const tree=$('#orgTree');
  if(!tree)return;
+ recalculateOrgStats();
+ if(!teamCatalog.some(team=>team.name===selectedTeam))selectedTeam=teamCatalog[0]?.name||'';
  tree.innerHTML=`
-  <div class="org-root"><i data-lucide="landmark"></i> Công an Thành phố</div>
-  <div class="org-room"><i data-lucide="building-2"></i> Phòng PV01</div>
-  <div class="team-list">
-   ${teams.map(team=>`<button class="team-node icon-button ${team.name===selectedTeam?'active':''}" data-team="${escapeHtml(team.name)}"><i data-lucide="users-round"></i>${escapeHtml(team.name)}</button>`).join('')}
+  <div class="org-root"><i data-lucide="landmark"></i> CÔNG AN TP. ĐỒNG NAI</div>
+  <div class="org-dynamic-list">
+   ${departmentCatalog.map(department=>{
+    const relatedTeams=teamCatalog.filter(team=>String(team.department_id||'')===String(department.id));
+    const teamLabel=getAssignmentName(department.unit_type);
+    return `<div class="org-unit ${department.unit_type==='Cấp xã'?'commune':'room'}">
+     <div class="org-room">
+      <i data-lucide="${department.unit_type==='Cấp xã'?'map-pin-house':'building-2'}"></i>
+      <span>${escapeHtml(department.name)}</span>
+      <b>${relatedTeams.length} ${teamLabel}</b>
+     </div>
+     <div class="team-list">
+      ${relatedTeams.map(team=>`<button class="team-node icon-button ${team.name===selectedTeam?'active':''}" data-team="${escapeHtml(team.name)}"><i data-lucide="${department.unit_type==='Cấp xã'?'map-pinned':'users-round'}"></i>${escapeHtml(team.name)}</button>`).join('') || `<p class="section-note">Chưa có ${teamLabel} trực thuộc.</p>`}
+     </div>
+    </div>`;
+   }).join('')}
   </div>`;
  $all('[data-team]').forEach(button=>button.onclick=()=>{selectedTeam=button.dataset.team;renderOrgTree();renderTeamAssets()});
  renderTeamAssets();
  refreshIcons();
 }
 function renderTeamAssets(){
- const team=teams.find(item=>item.name===selectedTeam) || teams[0];
+ const team=teamCatalog.find(item=>item.name===selectedTeam) || teamCatalog[0];
  if(!team)return;
  $('#teamAssetTitle').textContent='Cán bộ và tài sản đã bàn giao: '+team.name;
- if(!team.staff.length){
-  $('#teamAssetList').innerHTML='<p class="section-note">Đội này chưa có cán bộ được phân công.</p>';
+ const legacyTeam=teams.find(item=>item.name===team.name);
+ const staffNames=[...new Set([
+  ...accounts.filter(account=>account.u!=='admin' && account.team===team.name).map(account=>account.name),
+  ...(legacyTeam?.staff||[])
+ ].filter(Boolean))];
+ if(!staffNames.length){
+  $('#teamAssetList').innerHTML=`<p class="section-note">${getAssignmentName(team.unit_type)} này chưa có cán bộ được phân công.</p>`;
   return;
  }
- $('#teamAssetList').innerHTML=`<div class="handover-list">${team.staff.map(staffName=>{
+ $('#teamAssetList').innerHTML=`<div class="handover-list">${staffNames.map(staffName=>{
   const staffAccount=accounts.find(account=>account.name===staffName);
   const handedAssets=assets.filter(asset=>asset.owner===staffName || asset.unit===team.name);
   return `<div class="handover-card">
@@ -2373,7 +2696,7 @@ function refreshTeamsFromData(apiTeams=[]){
 async function loadDataFromDatabase(){
  if(location.protocol==='file:')return false;
  try{
-  const [apiAccounts,apiStaff,apiAssets,apiCategories,apiCatalogs,apiUserPerms,apiModules,apiPermissions,apiTeams,apiInventories]=await Promise.all([
+  const [apiAccounts,apiStaff,apiAssets,apiCategories,apiCatalogs,apiUserPerms,apiModules,apiPermissions,apiTeams,apiDepartments,apiInventories]=await Promise.all([
    fetchApi('/api/accounts'),
    fetchApi('/api/staff'),
    fetchApi('/api/assets'),
@@ -2383,6 +2706,7 @@ async function loadDataFromDatabase(){
    fetchApi('/api/modules'),
    fetchApi('/api/permissions'),
    fetchApi('/api/teams'),
+   fetchApi('/api/departments'),
    fetchApi('/api/inventories')
   ]);
   rebuildModuleDefinitions(apiModules);
@@ -2457,6 +2781,7 @@ async function loadDataFromDatabase(){
   catalogs.ranks.splice(0,catalogs.ranks.length,...(apiCatalogs.ranks||[]));
   Object.keys(accountPerms).forEach(key=>delete accountPerms[key]);
   Object.assign(accountPerms,apiUserPerms||{});
+  departmentCatalog.splice(0,departmentCatalog.length,...(apiDepartments||[]));
   teamCatalog.splice(0,teamCatalog.length,...(apiTeams||[]));
   inventorySessions.splice(0,inventorySessions.length,...(apiInventories||[]).map(normalizeInventorySession));
   Object.keys(inventoryItemsBySession).forEach(key=>delete inventoryItemsBySession[key]);
@@ -2480,7 +2805,9 @@ function renderApp(){
 async function initApp(){
  loadAppearanceSettings();
  const usingDatabase=await loadDataFromDatabase();
+ if(!usingDatabase)loadLocalOrgData();
  renderApp();
+ restoreLoginSession();
  if(usingDatabase)toast('Đã kết nối dữ liệu PostgreSQL');
 }
 
@@ -2504,6 +2831,9 @@ $('#deleteSelectedAccounts').onclick=deleteSelectedAccounts;
 $('#openUserModal').onclick=()=>openUserModal();
 $('#closeUserModal').onclick=$('#cancelUser').onclick=()=>$('#userModal').classList.remove('show');
 $('#createUser').onclick=saveUser;
+$('#newUserForm').username.oninput=event=>{event.target.value=sanitizeUsernameInput(event.target.value)};
+$('#userUnitType').onchange=()=>renderUserCatalogOptions('');
+$('#userDepartmentSelect').onchange=()=>renderUserCatalogOptions('');
 $('#savePerm').onclick=savePerms;
 $('#saveStaff').onclick=saveStaff;
 $('#resetStaff').onclick=()=>loadStaffDataForCurrentUser();
@@ -2516,6 +2846,8 @@ $('#addPosition').onclick=()=>addCatalogItem('positions','#newPositionName');
 $('#addRank').onclick=()=>addCatalogItem('ranks','#newRankName');
 $('#deleteSelectedPositions').onclick=()=>deleteSelectedCatalogItems('positions');
 $('#deleteSelectedRanks').onclick=()=>deleteSelectedCatalogItems('ranks');
+$('#addDepartment').onclick=addDepartment;
+$('#teamDepartmentSelect').onchange=renderTeamManager;
 $('#addManagedTeam').onclick=addManagedTeam;
 $('#addAssetCategory').onclick=addAssetCategory;
 $('#deleteSelectedAssetCategories').onclick=deleteSelectedAssetCategories;

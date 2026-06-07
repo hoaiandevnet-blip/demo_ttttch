@@ -6,7 +6,7 @@
   <title>Demo phần mềm TTTTCH</title>
   <link rel="icon" type="image/png" href="assets/img/huy-hieu-cand.png"/>
   <link rel="apple-touch-icon" href="assets/img/huy-hieu-cand.png"/>
-  <link rel="stylesheet" href="assets/css/style.css"/>
+  <link rel="stylesheet" href="assets/css/style.css?v=20260607-unit-input-wide"/>
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -26,22 +26,25 @@
         </div>
       </div>
       <h1>Đăng nhập hệ thống</h1>
-      <div class="login-note">
-        <span>Phiên bản demo nội bộ</span>
-        <strong>Mật khẩu mẫu: 123456</strong>
-      </div>
       <form id="loginForm" class="login-form">
         <label>Tài khoản
-          <select id="loginAccount"></select>
+          <input id="loginAccount" autocomplete="username" placeholder="Nhập tên tài khoản"/>
         </label>
         <label>Mật khẩu
           <span class="password-field">
-            <input id="loginPassword" type="password" value="123456" placeholder="Nhập mật khẩu"/>
+            <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Nhập mật khẩu"/>
             <button id="togglePassword" type="button" aria-label="Hiển thị mật khẩu">Hiện</button>
           </span>
         </label>
         <button class="primary" type="submit">Đăng nhập</button>
       </form>
+      <div class="login-contact">
+        <img src="assets/img/huy-hieu-cand.png" alt="Huy hiệu CAND"/>
+        <div>
+          <strong>LH: Trung úy Vũ Thành Công Duy - PV01</strong>
+          <span>SĐT: 0693.480.100</span>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -60,7 +63,7 @@
         <button class="nav-item active admin-only" data-module-key="permissions" data-page="permissions"><span><i data-lucide="shield-check"></i></span>Hệ thống & Phân quyền</button>
         <button class="nav-item admin-only" data-module-key="staffDirectory" data-page="staffDirectory"><span><i data-lucide="users-round"></i></span>Quản lý cán bộ</button>
         <button class="nav-item admin-only" data-module-key="catalogManager" data-page="catalogManager"><span><i data-lucide="list-plus"></i></span>Quản lý danh mục</button>
-        <button class="nav-item admin-only" data-module-key="teamManager" data-page="teamManager"><span><i data-lucide="users-round"></i></span>Quản lý đội</button>
+        <button class="nav-item admin-only" data-module-key="teamManager" data-page="teamManager"><span><i data-lucide="building-2"></i></span>Quản lý đơn vị</button>
         <button class="nav-item admin-only" data-module-key="moduleManager" data-page="moduleManager"><span><i data-lucide="layout-dashboard"></i></span>Quản lý module</button>
         <button class="nav-item admin-only" data-module-key="assetCategoryManager" data-page="assetCategoryManager"><span><i data-lucide="boxes"></i></span>Danh mục tài sản</button>
         <button class="nav-item admin-only" data-module-key="reports" data-page="reports"><span><i data-lucide="chart-column"></i></span>Báo cáo</button>
@@ -73,7 +76,7 @@
         <img src="assets/img/huy-hieu-cand.png" alt="Huy hiệu CAND"/>
         <div>
           <strong>LH: Trung úy Vũ Thành Công Duy - PV01</strong>
-          <span>SĐT: 0886.057.738</span>
+          <span>SĐT: 0693.480.100</span>
         </div>
       </div>
     </aside>
@@ -219,15 +222,39 @@
         <div class="card">
           <div class="card-head">
             <div>
-              <h2>Quản lý đội</h2>
-              <p class="section-note">Thêm, sửa, xóa đội trực thuộc Phòng PV01.</p>
+              <h2>Quản lý đơn vị</h2>
+              <p class="section-note">Tạo cấp phòng hoặc cấp xã theo nhu cầu, sau đó quản lý các đội trực thuộc từng đơn vị.</p>
             </div>
           </div>
-          <div class="inline-add">
-            <input id="newTeamManagerName" placeholder="Nhập tên đội mới"/>
-            <button class="primary icon-button" id="addManagedTeam" type="button"><i data-lucide="plus"></i>Thêm đội</button>
+          <div class="unit-manager-layout">
+            <section class="unit-panel">
+              <div class="unit-panel-head">
+                <span><i data-lucide="landmark"></i> Cấp đơn vị</span>
+                <strong id="unitCountLabel">0 đơn vị</strong>
+              </div>
+              <div class="unit-create department-create">
+                <select id="newDepartmentType">
+                  <option value="Cấp phòng">Cấp phòng</option>
+                  <option value="Cấp xã">Cấp xã</option>
+                </select>
+                <input id="newDepartmentName" placeholder="VD: Phòng PV01 hoặc Công an phường..."/>
+                <button class="primary icon-button" id="addDepartment" type="button"><i data-lucide="plus"></i>Thêm đơn vị</button>
+              </div>
+              <div class="unit-list" id="departmentList"></div>
+            </section>
+            <section class="unit-panel">
+              <div class="unit-panel-head">
+                <span><i data-lucide="users-round"></i> Đội/Trạm trực thuộc</span>
+                <strong id="teamCountLabel">0 đội/trạm</strong>
+              </div>
+              <div class="unit-create assignment-create">
+                <select id="teamDepartmentSelect"></select>
+                <input id="newTeamManagerName" placeholder="Nhập tên đội/trạm mới"/>
+                <button class="primary icon-button" id="addManagedTeam" type="button"><i data-lucide="plus"></i>Thêm đội/trạm</button>
+              </div>
+              <div class="team-manager-list" id="teamManagerList"></div>
+            </section>
           </div>
-          <div class="team-manager-list" id="teamManagerList"></div>
         </div>
       </section>
 
@@ -515,7 +542,7 @@
     <div class="modal-box">
       <div class="modal-head"><h2 id="userModalTitle">Thêm mới tài khoản</h2><button id="closeUserModal">×</button></div>
       <form id="newUserForm" class="form-grid modal-form">
-        <label>Tên đăng nhập*<input required name="username" placeholder="VD: nguyenvana"/></label>
+        <label>Tên đăng nhập*<input required name="username" placeholder="VD: nguyenvana" pattern="[a-z0-9._-]{3,32}" title="Chỉ dùng chữ thường không dấu, số, dấu chấm, gạch dưới hoặc gạch ngang, dài 3-32 ký tự"/></label>
         <label>Mật khẩu*
           <span class="password-field">
             <input required name="password" type="password" placeholder="Nhập mật khẩu"/>
@@ -526,7 +553,9 @@
         <label>Số điện thoại<input name="phone" placeholder="09xxxxxxxx"/></label>
         <label>Cấp bậc<select name="rank"><option value="">Không áp dụng</option><option>Thiếu úy</option><option>Trung úy</option><option>Đại úy</option></select></label>
         <label>Chức vụ<select name="position"><option value="">Không áp dụng</option><option>Cán bộ</option><option>Đội trưởng</option><option>Phó đội trưởng</option></select></label>
-        <label>Đội<select name="team"><option value="">Chọn đội</option></select></label>
+        <label>Loại đơn vị<select name="unitType" id="userUnitType"><option value="Cấp phòng">Cấp phòng</option><option value="Cấp xã">Cấp xã</option></select></label>
+        <label>Đơn vị<select name="departmentId" id="userDepartmentSelect"><option value="">Chọn đơn vị</option></select></label>
+        <label><span id="userAssignmentLabel">Đội</span><select required name="team"><option value="">Chọn đội</option></select></label>
         <label>Trạng thái<select name="status"><option>Hoạt động</option><option>Tạm khóa</option></select></label>
       </form>
       <div class="actionbar"><button class="ghost" id="cancelUser">Hủy bỏ</button><button class="primary" id="createUser">Lưu tài khoản</button></div>
@@ -544,6 +573,6 @@
   <div class="toast" id="toast">Đã lưu thành công</div>
   <script src="assets/js/lucide.min.js"></script>
   <script src="assets/js/xlsx.full.min.js"></script>
-  <script src="assets/js/app.js"></script>
+  <script src="assets/js/app.js?v=20260608-session-fallback"></script>
 </body>
 </html>

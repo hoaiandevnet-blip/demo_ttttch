@@ -33,7 +33,10 @@ CREATE TABLE ranks (
 CREATE TABLE departments (
   id BIGSERIAL PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  unit_type TEXT NOT NULL DEFAULT 'Cấp phòng',
+  parent_id BIGINT REFERENCES departments(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE teams (
@@ -202,15 +205,17 @@ INSERT INTO ranks (name) VALUES
   ('Đại úy'),
   ('Thượng úy');
 
-INSERT INTO departments (name) VALUES
-  ('Công an Thành phố'),
-  ('Phòng PV01');
+INSERT INTO departments (name, unit_type) VALUES
+  ('Công an TP. Đồng Nai', 'Cấp phòng'),
+  ('Phòng PV01', 'Cấp phòng'),
+  ('Công an xã mẫu', 'Cấp xã');
 
 INSERT INTO teams (department_id, name) VALUES
   ((SELECT id FROM departments WHERE name = 'Phòng PV01'), 'Đội trang bị'),
   ((SELECT id FROM departments WHERE name = 'Phòng PV01'), 'Đội tổng hợp'),
   ((SELECT id FROM departments WHERE name = 'Phòng PV01'), 'Phòng CNTT'),
-  ((SELECT id FROM departments WHERE name = 'Phòng PV01'), 'Phòng tổng hợp');
+  ((SELECT id FROM departments WHERE name = 'Phòng PV01'), 'Phòng tổng hợp'),
+  ((SELECT id FROM departments WHERE name = 'Công an xã mẫu'), 'Trạm tổng hợp');
 
 INSERT INTO users (username, password_hash, full_name, phone, rank_id, position_id, team_id, role_name, status, is_admin) VALUES
   ('admin', '123456', 'Admin', NULL, NULL, NULL, NULL, 'Quản trị viên', 'Hoạt động', true),
@@ -234,7 +239,7 @@ INSERT INTO modules (module_key, name, description, icon, visible, is_admin_only
   ('permissions', 'Hệ thống & Phân quyền', 'Quản trị tài khoản, nhóm người dùng và quyền chức năng', 'shield-check', true, true, false),
   ('staffDirectory', 'Quản lý cán bộ', 'Quản lý cán bộ theo đội, xem số hiệu, số điện thoại và hồ sơ chi tiết', 'users-round', true, true, false),
   ('catalogManager', 'Quản lý danh mục', 'Thêm, sửa, xóa chức vụ và chức hàm', 'list-plus', true, true, false),
-  ('teamManager', 'Quản lý đội', 'Thêm, sửa, xóa đội trực thuộc Phòng PV01', 'users-round', true, true, false),
+  ('teamManager', 'Quản lý đơn vị', 'Tạo cấp phòng, cấp xã và quản lý các đội trực thuộc', 'building-2', true, true, false),
   ('moduleManager', 'Quản lý module', 'Thiết lập module được hiển thị cho tài khoản cán bộ', 'layout-dashboard', true, true, false),
   ('assetCategoryManager', 'Danh mục tài sản', 'Quản lý loại tài sản và theo dõi trạng thái thiết bị', 'boxes', true, true, false),
   ('reports', 'Báo cáo', 'Thống kê thiết bị và tình hình bàn giao theo đội', 'chart-column', true, true, false),
@@ -245,7 +250,7 @@ INSERT INTO permissions (module_id, name) VALUES
   ((SELECT id FROM modules WHERE module_key = 'permissions'), 'Quản lý hệ thống'),
   ((SELECT id FROM modules WHERE module_key = 'staffDirectory'), 'Quản lý cán bộ'),
   ((SELECT id FROM modules WHERE module_key = 'catalogManager'), 'Quản lý danh mục'),
-  ((SELECT id FROM modules WHERE module_key = 'teamManager'), 'Quản lý đội'),
+  ((SELECT id FROM modules WHERE module_key = 'teamManager'), 'Quản lý đơn vị'),
   ((SELECT id FROM modules WHERE module_key = 'moduleManager'), 'Quản lý module'),
   ((SELECT id FROM modules WHERE module_key = 'assetCategoryManager'), 'Quản lý danh mục tài sản'),
   ((SELECT id FROM modules WHERE module_key = 'staff'), 'Quản lý hồ sơ cán bộ'),
