@@ -22,6 +22,10 @@ const assets=[
  {id:'TB008',name:'Flycam DJI Mini',type:'Flycam',date:'18/04/2026',owner:'Trần Thị B',unit:'Phòng CNTT',status:'Đang sử dụng',value:'15000000',note:'Thiết bị hỗ trợ quan sát'},
  {id:'TB009',name:'Điện thoại Samsung A55',type:'Di động',date:'19/04/2026',owner:'Trần Thị B',unit:'Phòng CNTT',status:'Hư',value:'8500000',note:'Vỡ màn hình'}
 ];
+const handoverRecipients=[
+ {id:'hr-1',unit:'Đội trang bị',manager:'nguyenvana',name:'Phạm Quốc Dũng',badge:'CB004',phone:'0904455667',assetIds:['TB001','TB004'],handoverNo:'BBBG-001/2026',handoverDate:'02/06/2026',note:'Bàn giao phục vụ công tác thường trực'},
+ {id:'hr-2',unit:'Đội tổng hợp',manager:'levanc',name:'Hoàng Văn Minh',badge:'CB005',phone:'0917788990',assetIds:['TB007'],handoverNo:'BBBG-002/2026',handoverDate:'03/06/2026',note:'Bàn giao phương tiện cơ động'}
+];
 const assetCategories=['PC','Màn hình','Bàn phím','Chuột','Xe máy','Flycam','Di động','Ô tô','Máy chiếu'];
 const teams=[
  {name:'Đội trang bị',staff:['Nguyễn Văn A','Trần Thị B']},
@@ -89,8 +93,8 @@ const catalogs={
  positions:['Cán bộ','Đội trưởng','Phó đội trưởng'],
  ranks:['Thiếu úy','Trung úy','Đại úy','Thượng úy']
 };
-const assetTabs=['Thu hồi/Tiếp nhận','Danh sách tài sản','Lập mới tài sản','Kiểm kê'];
-const assetPanels=['assetReceive','assetList','assetAdd','assetCheck'];
+const assetTabs=['Thu hồi/Tiếp nhận','Danh sách tài sản','Danh sách bàn giao','Lập mới tài sản','Kiểm kê'];
+const assetPanels=['assetReceive','assetList','assetHandoverList','assetAdd','assetCheck'];
 const sessionUserKey='ttttchCurrentUser';
 let currentUser=null;
 let selectedRole='admin';
@@ -104,6 +108,7 @@ let selectedTeam='Đội trang bị';
 let selectedStaffTeam='Đội trang bị';
 let selectedAssetCategory='PC';
 let selectedAssetStatus='all';
+let selectedHandoverAssetIds=[];
 let departmentCatalog=[
  {id:1,name:'Phòng PV01',unit_type:'Cấp phòng',team_count:2,staff_count:3,asset_count:assets.length},
  {id:2,name:'Công an xã mẫu',unit_type:'Cấp xã',team_count:1,staff_count:0,asset_count:0}
@@ -206,6 +211,19 @@ function loadLocalOrgData(){
   }
  }catch(error){
   console.warn('Không đọc được dữ liệu đơn vị localStorage',error);
+ }
+}
+function saveLocalHandoverData(){
+ if(location.protocol!=='file:')return;
+ localStorage.setItem('ttttchHandoverRecipients',JSON.stringify(handoverRecipients));
+}
+function loadLocalHandoverData(){
+ if(location.protocol!=='file:')return;
+ try{
+  const stored=JSON.parse(localStorage.getItem('ttttchHandoverRecipients')||'[]');
+  if(Array.isArray(stored))handoverRecipients.splice(0,handoverRecipients.length,...stored);
+ }catch(error){
+  console.warn('Không đọc được dữ liệu bàn giao localStorage',error);
  }
 }
 function loadAppearanceSettings(){
@@ -370,6 +388,7 @@ function activateUserSession(account,{restore=false}={}){
  updateAdminVisibility();
  updateModuleVisibility();
  showPage(account.u==='admin'?'permissions':getFirstUserPage());
+ if(location.protocol!=='file:')refreshHandoverDataForCurrentUser();
  if(!restore)recordActivity('Đăng nhập','login','Đăng nhập hệ thống');
 }
 function restoreLoginSession(){
@@ -620,7 +639,7 @@ function renderUserCatalogOptions(preferredTeam=''){
  const rankValue=form.rank.value;
  const positionValue=form.position.value;
  const teamValue=preferredTeam || form.team.value;
- const inferredDepartment=getDepartmentForTeam(teamValue);
+ const inferredDepartment=preferredTeam?getDepartmentForTeam(preferredTeam):null;
  const unitTypeValue=inferredDepartment?.unit_type || form.unitType?.value || 'Cấp phòng';
  form.rank.innerHTML='<option value="">Không áp dụng</option>'+catalogs.ranks.map(item=>`<option>${escapeHtml(item)}</option>`).join('');
  form.position.innerHTML='<option value="">Không áp dụng</option>'+catalogs.positions.map(item=>`<option>${escapeHtml(item)}</option>`).join('');
@@ -1101,6 +1120,11 @@ function renderStaffDirectory(){
  const container=$('#staffDirectoryRows');
  const detail=$('#staffProfileDetail');
  if(!container || !detail)return;
+ if(!currentUser){
+  container.innerHTML='';
+  detail.innerHTML='';
+  return;
+ }
  $('#staffDirectory')?.classList.toggle('staff-self-mode',!isAdminUser());
  const title=$('#staffDirectory .card-head h2');
  if(title)title.textContent=isAdminUser()?'Quản lý cán bộ theo đội':'Hồ sơ cán bộ của tôi';
@@ -2106,6 +2130,182 @@ function switchAssetPanel(panelId){
  $all('#assetTabs .tab').forEach(b=>b.classList.toggle('active',b.dataset.panel===panelId));
  $all('.asset-panel').forEach(p=>p.classList.toggle('active',p.id===panelId));
  if(panelId==='assetCheck')renderInventory();
+ if(panelId==='assetHandoverList')renderHandoverList();
+}
+function getAssignedUnitForAccount(username=currentUser?.u){
+ if(!username)return '';
+ const account=accounts.find(item=>item.u===username);
+ if(account?.team)return account.team;
+ const profile=staffProfiles.find(item=>item.username===username);
+ const profileUnit=profile?.sections?.['Thông tin công tác']?.['Đơn vị công tác'];
+ if(profileUnit)return profileUnit;
+ const names=[account?.name,profile?.sections?.['Thông tin cá nhân']?.['Họ và tên'],username].map(normalizeIdentity).filter(Boolean);
+ return assets.find(asset=>names.includes(normalizeIdentity(asset.owner)))?.unit || '';
+}
+function getManagedUnitsForCurrentUser(){
+ if(isAdminUser())return [...new Set(teamCatalog.map(team=>team.name).filter(Boolean))];
+ const unit=getAssignedUnitForAccount();
+ return unit?[unit]:[];
+}
+function getHandoverScopeUnits(){
+ const units=getManagedUnitsForCurrentUser();
+ return units.length?units:['Chưa phân đơn vị'];
+}
+function getHandoverAssets(recipient){
+ const ids=new Set(recipient.assetIds||[]);
+ return assets.filter(asset=>ids.has(asset.id));
+}
+function getHandoverVisibleRecipients(){
+ const units=getManagedUnitsForCurrentUser();
+ if(isAdminUser())return handoverRecipients;
+ return handoverRecipients.filter(recipient=>units.includes(recipient.unit));
+}
+function renderHandoverUnitOptions(selected=''){
+ const select=$('#handoverUnitSelect');
+ if(!select)return;
+ const units=getHandoverScopeUnits();
+ const value=selected || select.value || units[0] || '';
+ select.innerHTML=units.map(unit=>`<option value="${escapeHtml(unit)}">${escapeHtml(unit)}</option>`).join('');
+ select.value=units.includes(value)?value:(units[0]||'');
+ select.disabled=!isAdminUser();
+}
+function renderHandoverAssetPicker(){
+ const select=$('#handoverAssetSelect');
+ if(!select)return;
+ const unit=$('#handoverUnitSelect')?.value || getHandoverScopeUnits()[0] || '';
+ const candidates=assets.filter(asset=>asset.unit===unit);
+ select.innerHTML='<option value="">Chọn thiết bị trong đơn vị</option>'+candidates.map(asset=>{
+  const selected=selectedHandoverAssetIds.includes(asset.id);
+  return `<option value="${escapeHtml(asset.id)}" ${selected?'disabled':''}>${escapeHtml(asset.id)} · ${escapeHtml(asset.name)}</option>`;
+ }).join('');
+ renderSelectedHandoverAssets();
+}
+function renderSelectedHandoverAssets(){
+ const container=$('#handoverSelectedAssets');
+ if(!container)return;
+ const selectedAssets=assets.filter(asset=>selectedHandoverAssetIds.includes(asset.id));
+ container.innerHTML=selectedAssets.length ? selectedAssets.map(asset=>`
+  <span class="selected-asset-chip">
+   <i data-lucide="package-check"></i>
+   ${escapeHtml(asset.id)} · ${escapeHtml(asset.name)}
+   <button type="button" data-remove-handover-asset="${escapeHtml(asset.id)}" aria-label="Bỏ ${escapeHtml(asset.id)}">×</button>
+  </span>`).join('') : '<p class="section-note">Chưa chọn thiết bị bàn giao.</p>';
+ $all('[data-remove-handover-asset]').forEach(button=>button.onclick=()=>removeSelectedHandoverAsset(button.dataset.removeHandoverAsset));
+ refreshIcons();
+}
+function addSelectedHandoverAsset(){
+ const select=$('#handoverAssetSelect');
+ const assetId=select?.value||'';
+ if(!assetId){toast('Vui lòng chọn thiết bị');return}
+ if(!selectedHandoverAssetIds.includes(assetId))selectedHandoverAssetIds.push(assetId);
+ if(select)select.value='';
+ renderHandoverAssetPicker();
+}
+function removeSelectedHandoverAsset(assetId){
+ selectedHandoverAssetIds=selectedHandoverAssetIds.filter(id=>id!==assetId);
+ renderHandoverAssetPicker();
+}
+function readHandoverFile(){
+ const file=$('#handoverFile')?.files?.[0];
+ if(!file)return Promise.resolve({fileName:'',fileType:'',fileData:''});
+ const isWord=/\.(doc|docx)$/i.test(file.name);
+ const isImage=file.type.startsWith('image/');
+ if(!isWord && !isImage){
+  toast('Chỉ hỗ trợ file Word hoặc hình ảnh');
+  return Promise.reject(new Error('Định dạng biên bản không hợp lệ'));
+ }
+ if(file.size>6*1024*1024){
+  toast('File biên bản không được lớn hơn 6 MB');
+  return Promise.reject(new Error('File biên bản vượt quá dung lượng cho phép'));
+ }
+ return new Promise((resolve,reject)=>{
+  const reader=new FileReader();
+  reader.onload=()=>resolve({fileName:file.name,fileType:file.type||'application/octet-stream',fileData:String(reader.result||'')});
+  reader.onerror=()=>reject(new Error('Không đọc được file biên bản'));
+  reader.readAsDataURL(file);
+ });
+}
+function renderHandoverList(){
+ const summary=$('#handoverUnitSummary');
+ const list=$('#handoverRecipientList');
+ if(!summary || !list)return;
+ const units=getHandoverScopeUnits();
+ const visibleRecipients=getHandoverVisibleRecipients();
+ const assetCount=visibleRecipients.reduce((sum,recipient)=>sum+(recipient.assetIds?.length||0),0);
+ summary.innerHTML=`
+  <div class="handover-summary-card">
+   <span class="detail-title-icon"><i data-lucide="${isAdminUser()?'shield-check':'building-2'}"></i></span>
+   <div>
+    <small>${isAdminUser()?'Phạm vi quản trị':'Đơn vị phụ trách'}</small>
+    <strong>${escapeHtml(units.join(', '))}</strong>
+    <p>${visibleRecipients.length} cán bộ nhận bàn giao · ${assetCount} thiết bị · có thông tin biên bản kèm theo</p>
+   </div>
+  </div>`;
+ list.innerHTML=visibleRecipients.map(recipient=>{
+  const assignedAssets=getHandoverAssets(recipient);
+  return `<article class="handover-person-card">
+   <div class="handover-person-head">
+    <span class="avatar-tile">${escapeHtml(getInitials(recipient.name))}</span>
+    <div>
+     <strong>${escapeHtml(recipient.name)}</strong>
+     <small>${escapeHtml(recipient.unit)} · Số hiệu: ${escapeHtml(recipient.badge||'Chưa cập nhật')}</small>
+     <small><i data-lucide="phone"></i> ${escapeHtml(recipient.phone||'Chưa cập nhật')}</small>
+    </div>
+    <b>${assignedAssets.length} thiết bị</b>
+   </div>
+   <div class="handover-document">
+   <span><i data-lucide="file-text"></i> ${escapeHtml(recipient.handoverNo||'Chưa có số biên bản')}</span>
+   <span><i data-lucide="calendar-days"></i> ${escapeHtml(recipient.handoverDate||'Chưa cập nhật ngày')}</span>
+    ${recipient.fileName?`<a href="${escapeHtml(recipient.fileData||'#')}" download="${escapeHtml(recipient.fileName)}"><i data-lucide="paperclip"></i> ${escapeHtml(recipient.fileName)}</a>`:''}
+   </div>
+   <div class="asset-chip-list">
+    ${assignedAssets.length?assignedAssets.map(asset=>`<span class="asset-chip"><i data-lucide="package"></i>${escapeHtml(asset.id)} · ${escapeHtml(asset.name)}</span>`).join(''):'<span class="section-note">Chưa gán thiết bị.</span>'}
+   </div>
+   ${recipient.note?`<p class="section-note">${escapeHtml(recipient.note)}</p>`:''}
+  </article>`;
+ }).join('') || '<p class="section-note">Chưa có cán bộ nhận bàn giao trong phạm vi này.</p>';
+ renderHandoverUnitOptions();
+ selectedHandoverAssetIds=selectedHandoverAssetIds.filter(assetId=>assets.some(asset=>asset.id===assetId && asset.unit===($('#handoverUnitSelect')?.value||'')));
+ renderHandoverAssetPicker();
+ refreshIcons();
+}
+async function saveHandoverRecipient(){
+ const form=$('#handoverForm');
+ if(!form.reportValidity())return;
+ const f=new FormData(form);
+ const unit=f.get('unit')||getHandoverScopeUnits()[0]||'';
+ const filePayload=await readHandoverFile().catch(()=>null);
+ if(!filePayload)return;
+ const payload={
+  unit,
+  name:String(f.get('name')||'').trim(),
+  badge:String(f.get('badge')||'').trim(),
+  phone:String(f.get('phone')||'').trim(),
+  handoverNo:String(f.get('handoverNo')||'').trim(),
+  handoverDate:fromDateInputValue(f.get('handoverDate')||''),
+  note:String(f.get('note')||'').trim(),
+ assetIds:[...selectedHandoverAssetIds],
+  ...filePayload
+ };
+ if(!payload.name){toast('Vui lòng nhập họ tên người nhận');return}
+ if(!payload.assetIds.length){toast('Vui lòng chọn ít nhất một thiết bị bàn giao');return}
+ if(location.protocol!=='file:'){
+  try{
+   await sendApi('/api/handover-recipients','POST',payload);
+   await loadDataFromDatabase();
+  }catch(error){
+   toast(error.message || 'Không lưu được bàn giao');
+   return;
+  }
+ }else{
+  handoverRecipients.unshift({id:`hr-${Date.now()}`,manager:currentUser?.u||'admin',...payload});
+  saveLocalHandoverData();
+ }
+ form.reset();
+ selectedHandoverAssetIds=[];
+ renderHandoverList();
+ renderTeamAssets();
+ toast('Đã lưu biên bản bàn giao');
 }
 function renderOrgTree(){
  const tree=$('#orgTree');
@@ -2173,9 +2373,10 @@ function addTeam(){
  toast('Đã thêm đội mới');
 }
 function renderAssets(){
+ const activePanel=$('#assetTabs .tab.active')?.dataset.panel;
  const visibleTabs=isAdminUser()
   ? assetTabs.map((label,i)=>({label,panel:assetPanels[i]}))
-  : [{label:'Danh sách tài sản',panel:'assetList'}];
+  : [{label:'Danh sách tài sản',panel:'assetList'},{label:'Danh sách bàn giao',panel:'assetHandoverList'}];
  $('#assetTabs').innerHTML=visibleTabs.map((tab,i)=>`<button class="tab ${i?'':'active'}" data-panel="${tab.panel}">${tab.label}</button>`).join('');
  $all('#assetTabs .tab').forEach(b=>b.onclick=()=>switchAssetPanel(b.dataset.panel));
  if(isAdminUser()){
@@ -2185,9 +2386,10 @@ function renderAssets(){
   $('#switchAddAsset').classList.add('hidden');
  }
  renderAssetRows();
+ renderHandoverList();
  renderAssetForm('#assetForm');
  renderInventory();
- switchAssetPanel(visibleTabs[0].panel);
+ switchAssetPanel(visibleTabs.some(tab=>tab.panel===activePanel)?activePanel:visibleTabs[0].panel);
 }
 function renderAssetRows(){
  const q=($('#assetSearch')?.value||'').toLowerCase();
@@ -2718,10 +2920,40 @@ function refreshTeamsFromData(apiTeams=[]){
  })));
  if(!teams.some(team=>team.name===selectedTeam))selectedTeam=teams[0]?.name||'';
 }
+function applyApiHandovers(apiHandovers=[]){
+ handoverRecipients.splice(0,handoverRecipients.length,...apiHandovers.map(item=>({
+  id:String(item.id),
+  unit:item.team||'',
+  manager:item.manager_username||'',
+  name:item.full_name||'',
+  badge:item.badge_number||'',
+  phone:item.phone||'',
+  assetIds:Array.isArray(item.asset_codes)?item.asset_codes:[],
+  handoverNo:item.handover_no||'',
+  handoverDate:formatApiDate(item.handover_date),
+  fileName:item.file_name||'',
+  fileType:item.file_type||'',
+  fileData:item.file_data||'',
+  note:item.note||''
+ })));
+}
+async function refreshHandoverDataForCurrentUser(){
+ const username=currentUser?.u;
+ if(!username || location.protocol==='file:')return;
+ try{
+  const apiHandovers=await fetchApi('/api/handover-recipients');
+  if(currentUser?.u!==username)return;
+  applyApiHandovers(apiHandovers);
+  renderHandoverList();
+  renderTeamAssets();
+ }catch(error){
+  console.warn('Không tải được dữ liệu bàn giao theo tài khoản.',error);
+ }
+}
 async function loadDataFromDatabase(){
  if(location.protocol==='file:')return false;
  try{
-  const [apiAccounts,apiStaff,apiAssets,apiCategories,apiCatalogs,apiUserPerms,apiModules,apiPermissions,apiTeams,apiDepartments,apiInventories]=await Promise.all([
+  const [apiAccounts,apiStaff,apiAssets,apiCategories,apiCatalogs,apiUserPerms,apiModules,apiPermissions,apiTeams,apiDepartments,apiInventories,apiHandovers]=await Promise.all([
    fetchApi('/api/accounts'),
    fetchApi('/api/staff'),
    fetchApi('/api/assets'),
@@ -2732,7 +2964,8 @@ async function loadDataFromDatabase(){
    fetchApi('/api/permissions'),
    fetchApi('/api/teams'),
    fetchApi('/api/departments'),
-   fetchApi('/api/inventories')
+   fetchApi('/api/inventories'),
+   fetchApi('/api/handover-recipients')
   ]);
   rebuildModuleDefinitions(apiModules);
   perms.splice(0,perms.length,...apiPermissions.map(permission=>permission.name));
@@ -2762,6 +2995,7 @@ async function loadDataFromDatabase(){
    value:asset.original_value ? String(asset.original_value) : '',
    note:asset.note||''
   })));
+  applyApiHandovers(apiHandovers);
   assetCategories.splice(0,assetCategories.length,...apiCategories.map(category=>category.name));
   staffProfiles.splice(0,staffProfiles.length,...apiStaff.map(staff=>({
    username:staff.username,
@@ -2830,7 +3064,10 @@ function renderApp(){
 async function initApp(){
  loadAppearanceSettings();
  const usingDatabase=await loadDataFromDatabase();
- if(!usingDatabase)loadLocalOrgData();
+ if(!usingDatabase){
+  loadLocalOrgData();
+  loadLocalHandoverData();
+ }
  renderApp();
  restoreLoginSession();
  if(usingDatabase)toast('Đã kết nối dữ liệu PostgreSQL');
@@ -2857,7 +3094,12 @@ $('#openUserModal').onclick=()=>openUserModal();
 $('#closeUserModal').onclick=$('#cancelUser').onclick=()=>$('#userModal').classList.remove('show');
 $('#createUser').onclick=saveUser;
 $('#newUserForm').username.oninput=event=>{event.target.value=sanitizeUsernameInput(event.target.value)};
-$('#userUnitType').onchange=()=>renderUserCatalogOptions('');
+$('#userUnitType').onchange=()=>{
+ const form=$('#newUserForm');
+ form.departmentId.value='';
+ form.team.value='';
+ renderUserCatalogOptions('');
+};
 $('#userDepartmentSelect').onchange=()=>renderUserCatalogOptions('');
 $('#savePerm').onclick=savePerms;
 $('#saveStaff').onclick=saveStaff;
@@ -2891,6 +3133,11 @@ $('#resetAsset').onclick=e=>{e.preventDefault();$('#assetForm').reset()};
 $('#downloadAssetTemplate').onclick=downloadAssetTemplate;
 $('#importAssets').onclick=openAssetImport;
 $('#assetExcelInput').onchange=importAssetsFromExcel;
+$('#handoverUnitSelect').onchange=()=>{selectedHandoverAssetIds=[];renderHandoverAssetPicker()};
+$('#handoverAssetSelect').onchange=addSelectedHandoverAsset;
+$('#addHandoverAsset').onclick=addSelectedHandoverAsset;
+$('#resetHandoverForm').onclick=()=>{$('#handoverForm').reset();selectedHandoverAssetIds=[];renderHandoverList()};
+$('#saveHandoverRecipient').onclick=saveHandoverRecipient;
 $('#closeAssetModal').onclick=$('#cancelAssetEdit').onclick=()=>$('#assetModal').classList.remove('show');
 $('#updateAsset').onclick=updateAsset;
 $('#createInventory').onclick=createInventory;

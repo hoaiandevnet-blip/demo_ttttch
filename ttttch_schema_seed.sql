@@ -2,6 +2,9 @@ BEGIN;
 
 DROP TABLE IF EXISTS inventory_items CASCADE;
 DROP TABLE IF EXISTS inventory_sessions CASCADE;
+DROP TABLE IF EXISTS handover_record_assets CASCADE;
+DROP TABLE IF EXISTS handover_records CASCADE;
+DROP TABLE IF EXISTS handover_recipients CASCADE;
 DROP TABLE IF EXISTS asset_assignments CASCADE;
 DROP TABLE IF EXISTS assets CASCADE;
 DROP TABLE IF EXISTS asset_categories CASCADE;
@@ -156,6 +159,38 @@ CREATE TABLE asset_assignments (
   returned_at DATE,
   note TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE handover_recipients (
+  id BIGSERIAL PRIMARY KEY,
+  team_id BIGINT REFERENCES teams(id) ON DELETE SET NULL,
+  manager_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  full_name TEXT NOT NULL,
+  badge_number TEXT,
+  phone TEXT,
+  note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE handover_records (
+  id BIGSERIAL PRIMARY KEY,
+  recipient_id BIGINT NOT NULL REFERENCES handover_recipients(id) ON DELETE CASCADE,
+  handed_by_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  handover_no TEXT,
+  handover_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  note TEXT,
+  file_name TEXT,
+  file_type TEXT,
+  file_data TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE handover_record_assets (
+  record_id BIGINT NOT NULL REFERENCES handover_records(id) ON DELETE CASCADE,
+  asset_id BIGINT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (record_id, asset_id)
 );
 
 CREATE TABLE inventory_sessions (
@@ -338,5 +373,23 @@ INSERT INTO asset_assignments (asset_id, assigned_to_user_id, assigned_to_team_i
 SELECT a.id, a.manager_user_id, a.team_id, COALESCE(a.received_date, CURRENT_DATE), 'Dữ liệu bàn giao mẫu'
 FROM assets a
 WHERE a.manager_user_id IS NOT NULL OR a.team_id IS NOT NULL;
+
+INSERT INTO handover_recipients (team_id, manager_user_id, full_name, badge_number, phone, note) VALUES
+  ((SELECT id FROM teams WHERE name = 'Đội trang bị'), (SELECT id FROM users WHERE username = 'nguyenvana'), 'Phạm Quốc Dũng', 'CB004', '0904455667', 'Bàn giao phục vụ công tác thường trực'),
+  ((SELECT id FROM teams WHERE name = 'Đội tổng hợp'), (SELECT id FROM users WHERE username = 'levanc'), 'Hoàng Văn Minh', 'CB005', '0917788990', 'Bàn giao phương tiện cơ động');
+
+INSERT INTO handover_records (recipient_id, handed_by_user_id, handover_no, handover_date, note) VALUES
+  ((SELECT id FROM handover_recipients WHERE full_name = 'Phạm Quốc Dũng'), (SELECT id FROM users WHERE username = 'nguyenvana'), 'BBBG-001/2026', '2026-06-02', 'Biên bản bàn giao mẫu'),
+  ((SELECT id FROM handover_recipients WHERE full_name = 'Hoàng Văn Minh'), (SELECT id FROM users WHERE username = 'levanc'), 'BBBG-002/2026', '2026-06-03', 'Biên bản bàn giao mẫu');
+
+INSERT INTO handover_record_assets (record_id, asset_id)
+SELECT (SELECT id FROM handover_records WHERE handover_no = 'BBBG-001/2026'), id
+FROM assets
+WHERE asset_code IN ('TB001', 'TB004');
+
+INSERT INTO handover_record_assets (record_id, asset_id)
+SELECT (SELECT id FROM handover_records WHERE handover_no = 'BBBG-002/2026'), id
+FROM assets
+WHERE asset_code IN ('TB007');
 
 COMMIT;

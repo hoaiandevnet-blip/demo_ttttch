@@ -129,6 +129,46 @@ async function ensureSchema() {
   await pool.query('create index if not exists idx_inventory_sessions_date on inventory_sessions (inventory_date desc, id desc)');
   await pool.query('create index if not exists idx_inventory_items_session on inventory_items (session_id)');
   await pool.query(`
+    create table if not exists handover_recipients (
+      id bigserial primary key,
+      team_id bigint references teams(id) on delete set null,
+      manager_user_id bigint references users(id) on delete set null,
+      full_name text not null,
+      badge_number text,
+      phone text,
+      note text,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `);
+  await pool.query(`
+    create table if not exists handover_records (
+      id bigserial primary key,
+      recipient_id bigint not null references handover_recipients(id) on delete cascade,
+      handed_by_user_id bigint references users(id) on delete set null,
+      handover_no text,
+      handover_date date not null default current_date,
+      note text,
+      file_name text,
+      file_type text,
+      file_data text,
+      created_at timestamptz not null default now()
+    )
+  `);
+  await pool.query('alter table handover_records add column if not exists file_name text');
+  await pool.query('alter table handover_records add column if not exists file_type text');
+  await pool.query('alter table handover_records add column if not exists file_data text');
+  await pool.query(`
+    create table if not exists handover_record_assets (
+      record_id bigint not null references handover_records(id) on delete cascade,
+      asset_id bigint not null references assets(id) on delete cascade,
+      created_at timestamptz not null default now(),
+      primary key (record_id, asset_id)
+    )
+  `);
+  await pool.query('create index if not exists idx_handover_recipients_team on handover_recipients (team_id)');
+  await pool.query('create index if not exists idx_handover_records_recipient on handover_records (recipient_id)');
+  await pool.query(`
     alter table departments
     add column if not exists unit_type text not null default 'Cấp phòng'
   `);
@@ -429,6 +469,25 @@ async function findUserIdByName(client, value) {
     [cleanValue]
   );
   return result.rows[0]?.id || null;
+}
+
+async function findUserIdByUsername(client, username) {
+  const cleanUsername = String(username || '').trim();
+  if (!cleanUsername) return null;
+  const result = await client.query('select id from users where username = $1 and is_deleted = false limit 1', [cleanUsername]);
+  return result.rows[0]?.id || null;
+}
+
+async function getActorAccount(client, req) {
+  const actor = getActor(req);
+  const result = await client.query(`
+    select u.id, u.username, u.is_admin, u.team_id, coalesce(t.name, '') as team
+    from users u
+    left join teams t on t.id = u.team_id
+    where u.username = $1 and u.is_deleted = false
+    limit 1
+  `, [actor]);
+  return result.rows[0] || null;
 }
 
 function normalizeAssetDate(value) {
@@ -1442,6 +1501,157 @@ app.delete('/api/asset-categories', asyncHandler(async (req, res) => {
     metadata: { names: result.rows.map((row) => row.name) }
   });
   res.json({ ok: true, deleted: result.rows.map((row) => row.name) });
+}));
+
+app.get('/api/handover-recipients', asyncHandler(async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const actor = await getActorAccount(client, req);
+    if (!actor) {
+      if (getActor(req) === 'system') {
+        res.json([]);
+        return;
+      }
+      res.status(401).json({ error: 'Tài khoản không hợp lệ' });
+      return;
+    }
+    const result = await client.query(`
+    select
+      r.id,
+      r.full_name,
+      coalesce(r.badge_number, '') as badge_number,
+      coalesce(r.phone, '') as phone,
+      coalesce(r.note, '') as note,
+      coalesce(t.name, '') as team,
+      coalesce(manager.username, '') as manager_username,
+      coalesce(manager.full_name, '') as manager_name,
+      latest.handover_no,
+      latest.handover_date,
+      latest.file_name,
+      latest.file_type,
+      latest.file_data,
+      coalesce(asset_codes.asset_codes, array[]::text[]) as asset_codes
+    from handover_recipients r
+    left join teams t on t.id = r.team_id
+    left join users manager on manager.id = r.manager_user_id
+    left join lateral (
+      select h.id, coalesce(h.handover_no, '') as handover_no, h.handover_date, coalesce(h.file_name, '') as file_name, coalesce(h.file_type, '') as file_type, coalesce(h.file_data, '') as file_data
+      from handover_records h
+      where h.recipient_id = r.id
+      order by h.handover_date desc, h.id desc
+      limit 1
+    ) latest on true
+    left join lateral (
+      select array_agg(distinct a.asset_code order by a.asset_code) as asset_codes
+      from handover_records h
+      join handover_record_assets hra on hra.record_id = h.id
+      join assets a on a.id = hra.asset_id
+      where h.recipient_id = r.id
+    ) asset_codes on true
+    where ($1::boolean = true or r.team_id = $2)
+    order by t.name nulls last, r.full_name
+  `, [actor.is_admin, actor.team_id]);
+    res.json(result.rows);
+  } finally {
+    client.release();
+  }
+}));
+
+app.post('/api/handover-recipients', asyncHandler(async (req, res) => {
+  const name = String(req.body?.name || req.body?.fullName || '').trim();
+  let unit = String(req.body?.unit || req.body?.team || '').trim();
+  const assetIds = Array.isArray(req.body?.assetIds) ? req.body.assetIds.map((item) => String(item).trim()).filter(Boolean) : [];
+  const fileData = String(req.body?.fileData || req.body?.file_data || '');
+  if (!name || !unit || !assetIds.length) {
+    res.status(400).json({ error: 'Thiếu họ tên, đơn vị hoặc thiết bị bàn giao' });
+    return;
+  }
+  if (fileData.length > 9 * 1024 * 1024) {
+    res.status(413).json({ error: 'File biên bản vượt quá dung lượng cho phép' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const actor = await getActorAccount(client, req);
+    if (!actor) {
+      await client.query('rollback');
+      res.status(401).json({ error: 'Tài khoản không hợp lệ' });
+      return;
+    }
+    let teamId;
+    if (actor.is_admin) {
+      teamId = await resolveTeamIdForAccount(client, { team: unit });
+    } else {
+      if (!actor.team_id) {
+        await client.query('rollback');
+        res.status(403).json({ error: 'Tài khoản chưa được Admin phân đơn vị' });
+        return;
+      }
+      teamId = actor.team_id;
+      unit = actor.team;
+    }
+    const validAssets = await client.query(`
+      select asset_code
+      from assets
+      where team_id = $1 and asset_code = any($2::text[])
+    `, [teamId, assetIds]);
+    if (validAssets.rows.length !== new Set(assetIds).size) {
+      await client.query('rollback');
+      res.status(403).json({ error: 'Danh sách có thiết bị không thuộc đơn vị phụ trách' });
+      return;
+    }
+    const managerUserId = actor.id;
+    const recipient = await client.query(`
+      insert into handover_recipients (team_id, manager_user_id, full_name, badge_number, phone, note)
+      values ($1, $2, $3, $4, $5, $6)
+      returning id
+    `, [
+      teamId,
+      managerUserId,
+      name,
+      toNullableText(req.body?.badge || req.body?.badgeNumber),
+      toNullableText(req.body?.phone),
+      toNullableText(req.body?.note)
+    ]);
+    const record = await client.query(`
+      insert into handover_records (recipient_id, handed_by_user_id, handover_no, handover_date, note, file_name, file_type, file_data)
+      values ($1, $2, $3, $4, $5, $6, $7, $8)
+      returning id
+    `, [
+      recipient.rows[0].id,
+      managerUserId,
+      toNullableText(req.body?.handoverNo || req.body?.handover_no),
+      toDbDate(req.body?.handoverDate || req.body?.handover_date) || new Date().toISOString().slice(0, 10),
+      toNullableText(req.body?.note),
+      toNullableText(req.body?.fileName || req.body?.file_name),
+      toNullableText(req.body?.fileType || req.body?.file_type),
+      toNullableText(fileData)
+    ]);
+    if (assetIds.length) {
+      await client.query(`
+        insert into handover_record_assets (record_id, asset_id)
+        select $1, id
+        from assets
+        where team_id = $3 and asset_code = any($2::text[])
+        on conflict do nothing
+      `, [record.rows[0].id, assetIds, teamId]);
+    }
+    await logActivity(req, {
+      action: 'Lập biên bản bàn giao',
+      moduleKey: 'assets',
+      moduleName: 'Quản lý Tài sản',
+      detail: `Bàn giao ${assetIds.length} thiết bị cho ${name}`,
+      metadata: { recipient: name, unit, assetIds, handoverNo: req.body?.handoverNo || '' }
+    }, client);
+    await client.query('commit');
+    res.status(201).json({ ok: true, id: recipient.rows[0].id });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
 }));
 
 app.get('/api/assets', asyncHandler(async (_req, res) => {

@@ -6,7 +6,7 @@
   <title>Demo phần mềm TTTTCH</title>
   <link rel="icon" type="image/png" href="assets/img/huy-hieu-cand.png"/>
   <link rel="apple-touch-icon" href="assets/img/huy-hieu-cand.png"/>
-  <link rel="stylesheet" href="assets/css/style.css?v=20260607-unit-input-wide"/>
+  <link rel="stylesheet" href="assets/css/style.css?v=20260624-handover-complete"/>
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -481,6 +481,50 @@
             </div>
           </div>
 
+          <div id="assetHandoverList" class="asset-panel">
+            <div id="handoverUnitSummary"></div>
+            <div class="handover-workspace">
+              <div class="handover-directory">
+                <div class="section-headline">
+                  <div>
+                    <span class="section-chip"><i data-lucide="users-round"></i> Người nhận bàn giao</span>
+                    <h3>Danh sách cán bộ trong phạm vi phụ trách</h3>
+                  </div>
+                </div>
+                <div id="handoverRecipientList"></div>
+              </div>
+              <div class="handover-editor">
+                <div class="section-headline">
+                  <div>
+                    <span class="section-chip"><i data-lucide="file-signature"></i> Biên bản</span>
+                    <h3>Thêm người nhận và thiết bị bàn giao</h3>
+                  </div>
+                </div>
+                <form id="handoverForm" class="form-grid compact-form">
+                  <label>Đơn vị phụ trách<select name="unit" id="handoverUnitSelect"></select></label>
+                  <label>Họ tên cán bộ nhận*<input name="name" required placeholder="Nhập họ tên người nhận"/></label>
+                  <label>Số hiệu<input name="badge" placeholder="VD: CB006"/></label>
+                  <label>Số điện thoại<input name="phone" placeholder="09xxxxxxxx"/></label>
+                  <label>Số biên bản<input name="handoverNo" placeholder="VD: BBBG-003/2026"/></label>
+                  <label>Ngày bàn giao<input name="handoverDate" type="date"/></label>
+                  <label class="form-span">Thiết bị bàn giao
+                    <div class="handover-asset-select">
+                      <select id="handoverAssetSelect"><option value="">Chọn thiết bị trong đơn vị</option></select>
+                      <button class="ghost icon-button" id="addHandoverAsset" type="button"><i data-lucide="plus"></i>Thêm vào danh sách</button>
+                    </div>
+                    <div id="handoverSelectedAssets" class="selected-asset-list"></div>
+                  </label>
+                  <label class="form-span">File biên bản Word/Hình ảnh
+                    <input name="handoverFile" id="handoverFile" type="file" accept=".doc,.docx,image/*"/>
+                    <small class="handover-file-hint">Hỗ trợ Word (.doc, .docx) hoặc hình ảnh, dung lượng tối đa 6 MB.</small>
+                  </label>
+                  <label class="form-span">Ghi chú<input name="note" placeholder="Nội dung hoặc tình trạng bàn giao"/></label>
+                </form>
+                <div class="actionbar"><button class="ghost icon-button" id="resetHandoverForm" type="button"><i data-lucide="rotate-ccw"></i>Làm mới</button><button class="primary icon-button" id="saveHandoverRecipient" type="button"><i data-lucide="file-check-2"></i>Lưu bàn giao</button></div>
+              </div>
+            </div>
+          </div>
+
           <div id="assetAdd" class="asset-panel">
             <div class="asset-import-panel">
               <div>
@@ -573,6 +617,6 @@
   <div class="toast" id="toast">Đã lưu thành công</div>
   <script src="assets/js/lucide.min.js"></script>
   <script src="assets/js/xlsx.full.min.js"></script>
-  <script src="assets/js/app.js?v=20260608-session-hash"></script>
+  <script src="assets/js/app.js?v=20260624-unit-type-fix"></script>
 </body>
 </html>
