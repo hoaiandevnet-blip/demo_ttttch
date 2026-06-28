@@ -6,7 +6,7 @@
   <title>Demo phần mềm TTTTCH</title>
   <link rel="icon" type="image/png" href="assets/img/huy-hieu-cand.png"/>
   <link rel="apple-touch-icon" href="assets/img/huy-hieu-cand.png"/>
-  <link rel="stylesheet" href="assets/css/style.css?v=20260624-handover-complete"/>
+  <link rel="stylesheet" href="assets/css/style.css?v=20260628-asset-list-all"/>
 </head>
 <body>
   <section class="login-screen" id="loginScreen">
@@ -129,7 +129,7 @@
             </select>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="account-table">
               <thead><tr><th><input id="selectAllAccounts" type="checkbox" aria-label="Chọn tất cả tài khoản"/></th><th>Tên đăng nhập</th><th>Họ và tên</th><th>Cấp bậc</th><th>Chức vụ</th><th>Số điện thoại</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
               <tbody id="accountRows"></tbody>
             </table>
@@ -501,7 +501,9 @@
                   </div>
                 </div>
                 <form id="handoverForm" class="form-grid compact-form">
-                  <label>Đơn vị phụ trách<select name="unit" id="handoverUnitSelect"></select></label>
+                  <label>Loại đơn vị<select name="unitType" id="handoverUnitType"><option value="Cấp phòng">Cấp phòng</option><option value="Cấp xã">Cấp xã</option></select></label>
+                  <label>Tên đơn vị<select name="departmentId" id="handoverDepartmentSelect"></select></label>
+                  <label><span id="handoverAssignmentLabel">Đội/Trạm trực thuộc</span><select name="unit" id="handoverUnitSelect"></select></label>
                   <label>Họ tên cán bộ nhận*<input name="name" required placeholder="Nhập họ tên người nhận"/></label>
                   <label>Số hiệu<input name="badge" placeholder="VD: CB006"/></label>
                   <label>Số điện thoại<input name="phone" placeholder="09xxxxxxxx"/></label>
@@ -510,7 +512,6 @@
                   <label class="form-span">Thiết bị bàn giao
                     <div class="handover-asset-select">
                       <select id="handoverAssetSelect"><option value="">Chọn thiết bị trong đơn vị</option></select>
-                      <button class="ghost icon-button" id="addHandoverAsset" type="button"><i data-lucide="plus"></i>Thêm vào danh sách</button>
                     </div>
                     <div id="handoverSelectedAssets" class="selected-asset-list"></div>
                   </label>
@@ -586,7 +587,10 @@
     <div class="modal-box">
       <div class="modal-head"><h2 id="userModalTitle">Thêm mới tài khoản</h2><button id="closeUserModal">×</button></div>
       <form id="newUserForm" class="form-grid modal-form">
-        <label>Tên đăng nhập*<input required name="username" placeholder="VD: nguyenvana" pattern="[a-z0-9._-]{3,32}" title="Chỉ dùng chữ thường không dấu, số, dấu chấm, gạch dưới hoặc gạch ngang, dài 3-32 ký tự"/></label>
+        <label>Tên đăng nhập*
+          <input required name="username" placeholder="VD: nguyenvana" pattern="[a-z0-9._-]{3,32}" title="Chỉ dùng chữ thường không dấu, số, dấu chấm, gạch dưới hoặc gạch ngang, dài 3-32 ký tự"/>
+          <small class="field-hint" id="usernameCheckHint">Chỉ dùng chữ thường không dấu, không khoảng trắng.</small>
+        </label>
         <label>Mật khẩu*
           <span class="password-field">
             <input required name="password" type="password" placeholder="Nhập mật khẩu"/>
@@ -594,6 +598,7 @@
           </span>
         </label>
         <label>Họ tên*<input required name="fullname" placeholder="Nguyễn Văn A"/></label>
+        <label>Số hiệu<input name="badgeNumber" inputmode="numeric" placeholder="VD: 123456"/></label>
         <label>Số điện thoại<input name="phone" placeholder="09xxxxxxxx"/></label>
         <label>Cấp bậc<select name="rank"><option value="">Không áp dụng</option><option>Thiếu úy</option><option>Trung úy</option><option>Đại úy</option></select></label>
         <label>Chức vụ<select name="position"><option value="">Không áp dụng</option><option>Cán bộ</option><option>Đội trưởng</option><option>Phó đội trưởng</option></select></label>
@@ -614,9 +619,43 @@
     </div>
   </div>
 
+  <div class="modal" id="moduleNameModal" aria-hidden="true">
+    <div class="modal-box compact-modal">
+      <div class="modal-head"><h2>Chỉnh sửa tên module</h2><button id="closeModuleNameModal" type="button" aria-label="Đóng">×</button></div>
+      <form id="moduleNameForm">
+        <label class="modal-field">Tên hiển thị
+          <input id="moduleNameInput" maxlength="100" required placeholder="Nhập tên module"/>
+        </label>
+        <p class="modal-help">Tên mới sẽ được đồng bộ tại menu bên trái, tiêu đề trang và danh sách phân quyền.</p>
+        <div class="actionbar"><button class="ghost" id="cancelModuleNameEdit" type="button">Hủy bỏ</button><button class="primary icon-button" type="submit"><i data-lucide="save"></i>Lưu tên module</button></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal" id="accountTransferModal" aria-hidden="true">
+    <div class="modal-box account-transfer-modal">
+      <div class="modal-head"><h2>Phải bàn giao tài sản trước khi xóa</h2><button id="closeAccountTransferModal" type="button" aria-label="Đóng">×</button></div>
+      <div class="account-transfer-alert">
+        <i data-lucide="triangle-alert"></i>
+        <div><strong>Không thể xóa ngay tài khoản này</strong><p>Tài khoản vẫn đang quản lý tài sản. Hãy chuyển toàn bộ tài sản sang một tài khoản khác; sau đó hệ thống mới xóa mềm tài khoản.</p></div>
+      </div>
+      <div id="accountTransferAssets" class="account-transfer-assets"></div>
+      <form id="accountTransferForm">
+        <label class="modal-field">Tài khoản nhận bàn giao
+          <select id="accountTransferTarget" required></select>
+        </label>
+        <p id="accountTransferUnavailable" class="account-transfer-unavailable hidden">Hiện không có tài khoản cán bộ đang hoạt động để nhận tài sản. Vui lòng tạo hoặc mở khóa một tài khoản khác trước.</p>
+        <div class="actionbar">
+          <button class="ghost" id="cancelAccountTransfer" type="button">Hủy bỏ</button>
+          <button class="primary icon-button" id="confirmAccountTransfer" type="submit"><i data-lucide="arrow-right-left"></i>Chuyển tài sản và xóa</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div class="toast" id="toast">Đã lưu thành công</div>
   <script src="assets/js/lucide.min.js"></script>
   <script src="assets/js/xlsx.full.min.js"></script>
-  <script src="assets/js/app.js?v=20260624-unit-type-fix"></script>
+  <script src="assets/js/app.js?v=20260628-asset-list-all"></script>
 </body>
 </html>

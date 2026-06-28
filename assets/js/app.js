@@ -33,7 +33,7 @@ const teams=[
  {name:'Trạm tổng hợp',staff:[]}
 ];
 const staffTabs={
- 'Thông tin cá nhân':['Họ và tên','Ngày sinh','Giới tính','Dân tộc','Số CCCD','Ngày cấp CCCD','Nơi thường trú','Nơi ở hiện nay'],
+ 'Thông tin cá nhân':['Họ và tên','Số hiệu','Ngày sinh','Giới tính','Dân tộc','Số CCCD','Ngày cấp CCCD','Nơi thường trú','Nơi ở hiện nay'],
  'Thông tin công tác':['Đơn vị công tác','Chức vụ hiện tại','Cấp bậc','Ngày vào ngành','Chuyên ngành đào tạo','Trình độ chuyên môn'],
  'Trình độ đào tạo':['Trình độ học vấn','Trường đào tạo','Chuyên ngành','Năm tốt nghiệp','Loại hình đào tạo','Ngoại ngữ'],
  'Thông tin khác':['Tình trạng hôn nhân','Số điện thoại','Email','Ghi chú'],
@@ -99,8 +99,12 @@ const sessionUserKey='ttttchCurrentUser';
 let currentUser=null;
 let selectedRole='admin';
 let permissionsDirty=false;
+let editingPermissionModuleKey=null;
+let pendingAccountDeletion=[];
 let selectedStaff='';
 let editingUser=null;
+let usernameCheckTimer=null;
+let usernameCheckToken=0;
 let editingAsset=null;
 let activeStaffTab=Object.keys(staffTabs)[0];
 let staffAvatarSrc='';
@@ -109,6 +113,7 @@ let selectedStaffTeam='Đội trang bị';
 let selectedAssetCategory='PC';
 let selectedAssetStatus='all';
 let selectedHandoverAssetIds=[];
+let selectedHandoverRecipientId='';
 let departmentCatalog=[
  {id:1,name:'Phòng PV01',unit_type:'Cấp phòng',team_count:2,staff_count:3,asset_count:assets.length},
  {id:2,name:'Công an xã mẫu',unit_type:'Cấp xã',team_count:1,staff_count:0,asset_count:0}
@@ -283,13 +288,31 @@ function rebuildModuleDefinitions(apiModules=[]){
  moduleDefinitions.splice(0,moduleDefinitions.length,...merged);
  Object.keys(moduleVisibility).forEach(key=>delete moduleVisibility[key]);
  merged.forEach(module=>{moduleVisibility[module.key]=module.visible!==false});
+ syncModulePresentation();
+}
+function syncModulePresentation(){
+ moduleDefinitions.forEach(module=>{
+  $all(`[data-module-key="${module.key}"]`).forEach(element=>{
+   if(element.classList.contains('nav-item')){
+    element.innerHTML=`<span><i data-lucide="${escapeHtml(module.icon||'blocks')}"></i></span>${escapeHtml(module.name)}`;
+   }
+  });
+  const customSection=document.getElementById(module.key);
+  if(module.custom && customSection){
+   const heading=customSection.querySelector('h3');
+   const description=customSection.querySelector('p');
+   if(heading)heading.textContent=module.name;
+   if(description)description.textContent=module.description||'Module tùy chỉnh đang ở trạng thái demo giao diện.';
+  }
+ });
+ refreshIcons();
 }
 function getStaffProfile(username){
  let profile=staffProfiles.find(p=>p.username===username);
  const account=accounts.find(a=>a.u===username);
  if(!profile && account && account.u!=='admin'){
   profile={username,photo:'',sections:{
-   'Thông tin cá nhân':{'Họ và tên':account.name,'Số điện thoại':account.phone},
+   'Thông tin cá nhân':{'Họ và tên':account.name,'Số hiệu':'','Số điện thoại':account.phone},
    'Thông tin công tác':{'Đơn vị công tác':account.team,'Chức vụ hiện tại':account.pos,'Cấp bậc':account.rank},
    'Trình độ đào tạo':{},
    'Thông tin khác':{},
@@ -299,10 +322,28 @@ function getStaffProfile(username){
  }
  return profile;
 }
+function getStaffBadgeNumber(username){
+ const profile=getStaffProfile(username);
+ const personal=profile?.sections?.['Thông tin cá nhân']||{};
+ return String(personal['Số hiệu']||'').trim();
+}
 
 function renderLogin(){
  const input=$('#loginAccount');
  if(input)input.placeholder='VD: admin';
+}
+function normalizeApiAccount(account){
+ return {
+  u:account.username,
+  password:'',
+  name:account.full_name,
+  rank:account.rank||'',
+  pos:account.position||'',
+  team:account.team||'',
+  phone:account.phone||'',
+  status:account.status||'Hoạt động',
+  role:account.role_name||account.position||'Cán bộ nghiệp vụ'
+ };
 }
 function sanitizeUsernameInput(value){
  return String(value||'').trim().toLowerCase().replace(/\s+/g,'');
@@ -314,6 +355,89 @@ function getUsernameError(value){
  if(!value)return 'Vui lòng nhập tên đăng nhập';
  if(!isValidUsername(value))return 'Tên đăng nhập chỉ dùng chữ thường không dấu, số, dấu chấm, gạch dưới hoặc gạch ngang, dài 3-32 ký tự';
  return '';
+}
+function isUsernameTaken(username){
+ const normalized=sanitizeUsernameInput(username);
+ return accounts.some(account=>account.u===normalized && account.u!==editingUser);
+}
+async function checkUsernameAvailabilityInDatabase(username){
+ if(location.protocol==='file:')return {available:!isUsernameTaken(username),reason:'Tên đăng nhập đã tồn tại'};
+ const params=new URLSearchParams({username});
+ if(editingUser)params.set('currentUsername',editingUser);
+ return fetchApi(`/api/accounts/check-username?${params.toString()}`);
+}
+async function updateUsernameAvailability(options={}){
+ const force=Boolean(options?.force);
+ const form=$('#newUserForm');
+ const input=form?.username;
+ const hint=$('#usernameCheckHint');
+ if(!input || !hint)return true;
+ const username=sanitizeUsernameInput(input.value);
+ input.value=username;
+ hint.classList.remove('ok','error','muted');
+ const formatError=getUsernameError(username);
+ if(!username){
+  input.setCustomValidity('');
+  hint.textContent='Chỉ dùng chữ thường không dấu, không khoảng trắng.';
+  hint.classList.add('muted');
+  return true;
+ }
+ if(formatError){
+  input.setCustomValidity(formatError);
+  hint.textContent=formatError;
+  hint.classList.add('error');
+  return false;
+ }
+ if(location.protocol==='file:'){
+  if(isUsernameTaken(username)){
+   const message='Tên đăng nhập đã tồn tại';
+   input.setCustomValidity(message);
+   hint.textContent=message;
+   hint.classList.add('error');
+   return false;
+  }
+  input.setCustomValidity('');
+  hint.textContent='Tên đăng nhập có thể sử dụng';
+  hint.classList.add('ok');
+  return true;
+ }
+ clearTimeout(usernameCheckTimer);
+ const token=++usernameCheckToken;
+ const runCheck=async()=>{
+  input.setCustomValidity('Đang kiểm tra tên đăng nhập');
+  hint.classList.remove('ok','error','muted');
+  hint.textContent='Đang kiểm tra tên đăng nhập...';
+  hint.classList.add('muted');
+  try{
+   const result=await checkUsernameAvailabilityInDatabase(username);
+   if(token!==usernameCheckToken)return false;
+   hint.classList.remove('ok','error','muted');
+   if(!result.available){
+    const message=result.reason || 'Tên đăng nhập đã tồn tại';
+    input.setCustomValidity(message);
+    hint.textContent=message;
+    hint.classList.add('error');
+    return false;
+   }
+   input.setCustomValidity('');
+   hint.textContent='Tên đăng nhập có thể sử dụng';
+   hint.classList.add('ok');
+   return true;
+  }catch(error){
+   if(token!==usernameCheckToken)return false;
+   const message=error.message || 'Không kiểm tra được tên đăng nhập';
+   input.setCustomValidity(message);
+   hint.textContent=message;
+   hint.classList.add('error');
+   return false;
+  }
+ };
+ if(force)return runCheck();
+ input.setCustomValidity('Đang kiểm tra tên đăng nhập');
+ hint.textContent='Đang kiểm tra tên đăng nhập...';
+ hint.classList.add('muted');
+ usernameCheckTimer=setTimeout(runCheck,250);
+ return false;
 }
 function readWindowSession(){
  try{
@@ -402,12 +526,27 @@ function restoreLoginSession(){
  activateUserSession(account,{restore:true});
  return true;
 }
-function login(event){
+async function login(event){
  event.preventDefault();
  const username=sanitizeUsernameInput($('#loginAccount').value);
  $('#loginAccount').value=username;
+ const password=$('#loginPassword').value;
+ if(location.protocol!=='file:'){
+  try{
+   const result=await sendApi('/api/login','POST',{username,password,actor:username});
+   const account=normalizeApiAccount(result.account);
+   const existingIndex=accounts.findIndex(item=>item.u===account.u);
+   if(existingIndex>=0)accounts[existingIndex]={...accounts[existingIndex],...account};
+   else accounts.push(account);
+   activateUserSession(accounts.find(item=>item.u===account.u)||account);
+   toast('Đăng nhập thành công');
+  }catch(error){
+   toast(error.message || 'Sai tài khoản hoặc mật khẩu');
+  }
+  return;
+ }
  const account=accounts.find(a=>a.u.toLowerCase()===username);
- if(!account || account.password!==$('#loginPassword').value){toast('Sai tài khoản hoặc mật khẩu');return}
+ if(!account || account.password!==password){toast('Sai tài khoản hoặc mật khẩu');return}
  if(account.status!=='Hoạt động'){toast('Tài khoản đang bị tạm khóa');return}
  activateUserSession(account);
  toast('Đăng nhập thành công');
@@ -521,8 +660,8 @@ function showPage(page){
   assets:['Quản lý Tài sản','Tiếp nhận, phân bổ, kiểm kê và theo dõi tài sản']
  };
  const dynamicModule=moduleDefinitions.find(module=>module.key===page);
- let title=(titles[page]?.[0]) || dynamicModule?.name || 'Module';
- let subtitle=(titles[page]?.[1]) || dynamicModule?.description || 'Module tùy chỉnh';
+ let title=dynamicModule?.name || titles[page]?.[0] || 'Module';
+ let subtitle=dynamicModule?.description || titles[page]?.[1] || 'Module tùy chỉnh';
  if(!isAdminUser() && page==='staffDirectory')subtitle='Chỉ hiển thị hồ sơ cá nhân của tài khoản đang đăng nhập';
  if(!isAdminUser() && page==='assetCategoryManager')subtitle='Chỉ hiển thị danh mục và tài sản đã bàn giao cho tài khoản đang đăng nhập';
  $('#pageTitle').textContent=title;
@@ -574,16 +713,22 @@ async function deleteSelectedAccounts(){
  if(!isAdminUser()){toast('Chỉ Admin được xóa dữ liệu');return}
  const usernames=$all('[data-select-account]:checked').map(input=>input.dataset.selectAccount).filter(username=>username && username!=='admin');
  if(!usernames.length){toast('Chưa chọn tài khoản cần xóa');return}
- if(!confirm(`Xóa ${usernames.length} tài khoản đã chọn?`))return;
  if(location.protocol!=='file:'){
   try{
-   await sendApi('/api/accounts','DELETE',{usernames});
-   await loadDataFromDatabase();
+   const impact=await sendApi('/api/accounts/deletion-check','POST',{usernames});
+   if(impact.requiresTransfer){
+    openAccountTransferModal(impact);
+    return;
+   }
+   if(!confirm(`Xóa ${usernames.length} tài khoản đã chọn?`))return;
+   await performAccountDeletion(usernames);
+   return;
   }catch(error){
-   toast(error.message || 'Không xóa được tài khoản');
+   toast(error.message || 'Không kiểm tra được tài khoản');
    return;
   }
  }else{
+  if(!confirm(`Xóa ${usernames.length} tài khoản đã chọn?`))return;
   usernames.forEach(username=>{
    const index=accounts.findIndex(account=>account.u===username);
    if(index>=0)accounts.splice(index,1);
@@ -595,6 +740,55 @@ async function deleteSelectedAccounts(){
  renderApp();
  toast('Đã xóa tài khoản đã chọn');
 }
+function openAccountTransferModal(impact){
+ pendingAccountDeletion=impact.usernames||[];
+ const accountBlocks=(impact.accounts||[]).filter(account=>(account.assets||[]).length).map(account=>`
+  <section class="account-transfer-group">
+   <div class="account-transfer-heading">
+    <span><i data-lucide="user-round-x"></i></span>
+    <div><strong>${escapeHtml(account.full_name)}</strong><small>${escapeHtml(account.username)} · ${(account.assets||[]).length} tài sản</small></div>
+   </div>
+   <div class="asset-chip-list">${(account.assets||[]).map(asset=>`<span class="asset-chip"><i data-lucide="package"></i>${escapeHtml(asset.asset_code)} · ${escapeHtml(asset.name)}</span>`).join('')}</div>
+  </section>
+ `).join('');
+ $('#accountTransferAssets').innerHTML=accountBlocks;
+ const recipients=impact.eligibleRecipients||[];
+ $('#accountTransferTarget').innerHTML='<option value="">Chọn tài khoản nhận toàn bộ tài sản</option>'+recipients.map(account=>`
+  <option value="${escapeHtml(account.username)}">${escapeHtml(account.full_name)} (${escapeHtml(account.username)})${account.team?` · ${escapeHtml(account.team)}`:''}</option>
+ `).join('');
+ $('#confirmAccountTransfer').disabled=!recipients.length;
+ $('#accountTransferUnavailable').classList.toggle('hidden',recipients.length>0);
+ $('#accountTransferModal').classList.add('show');
+ $('#accountTransferModal').setAttribute('aria-hidden','false');
+ refreshIcons();
+}
+function closeAccountTransferModal(){
+ pendingAccountDeletion=[];
+ $('#accountTransferModal').classList.remove('show');
+ $('#accountTransferModal').setAttribute('aria-hidden','true');
+ $('#accountTransferForm').reset();
+}
+async function confirmAccountTransfer(event){
+ event?.preventDefault();
+ const transferToUsername=$('#accountTransferTarget').value;
+ if(!transferToUsername){toast('Vui lòng chọn tài khoản nhận bàn giao');return}
+ await performAccountDeletion(pendingAccountDeletion,transferToUsername);
+}
+async function performAccountDeletion(usernames,transferToUsername=''){
+ try{
+  const result=await sendApi('/api/accounts','DELETE',{usernames,transferToUsername});
+  await loadDataFromDatabase();
+  if(usernames.includes(selectedRole))selectedRole=accounts[0]?.u||'admin';
+  if(usernames.includes(selectedStaff))selectedStaff=accounts.find(account=>account.u!=='admin')?.u||'';
+  closeAccountTransferModal();
+  renderApp();
+  toast(result.transferredAssetCount
+   ? `Đã chuyển ${result.transferredAssetCount} tài sản và xóa tài khoản`
+   : 'Đã xóa tài khoản đã chọn');
+ }catch(error){
+  toast(error.message||'Không xóa được tài khoản');
+ }
+}
 function openUserModal(username=null){
  editingUser=username;
  $('#newUserForm').reset();
@@ -605,17 +799,22 @@ function openUserModal(username=null){
  const form=$('#newUserForm');
  form.username.disabled=username==='admin' || !isAdminUser();
  form.status.disabled=username==='admin';
+ form.badgeNumber.disabled=username==='admin';
  form.phone.disabled=username==='admin';
  form.rank.disabled=username==='admin';
  form.position.disabled=username==='admin';
  form.unitType.disabled=username==='admin';
  form.departmentId.disabled=username==='admin';
  form.team.disabled=username==='admin';
+ form.password.required=!username;
+ form.password.placeholder=username?'Để trống nếu không đổi mật khẩu':'Nhập mật khẩu';
  if(username){
   const user=accounts.find(a=>a.u===username);
+  const profile=getStaffProfile(user.u);
   form.username.value=user.u;
-  form.password.value=user.password;
+  form.password.value=location.protocol==='file:'?user.password:'';
   form.fullname.value=user.name;
+  form.badgeNumber.value=getStaffBadgeNumber(user.u);
   form.phone.value=user.phone;
   form.rank.value=user.rank;
   form.position.value=user.pos;
@@ -623,6 +822,7 @@ function openUserModal(username=null){
   renderUserCatalogOptions(user.team||'');
   form.status.value=user.status;
  }
+ updateUsernameAvailability();
  $('#userModal').classList.add('show');
 }
 function getDepartmentForTeam(teamName){
@@ -669,6 +869,12 @@ function renderUserCatalogOptions(preferredTeam=''){
 }
 async function saveUser(){
  const form=$('#newUserForm');
+ const usernameAvailable=await updateUsernameAvailability({force:true});
+ if(!usernameAvailable){
+  form.username.focus();
+  form.reportValidity();
+  return;
+ }
  if(!form.reportValidity())return;
  const f=new FormData(form);
  const normalizedUsername=sanitizeUsernameInput(f.get('username')||editingUser||'');
@@ -676,9 +882,10 @@ async function saveUser(){
  const usernameError=getUsernameError(normalizedUsername);
  if(usernameError){toast(usernameError);form.username.focus();return}
  const payload={
-  username:normalizedUsername,
-  password:f.get('password')||'123456',
+ username:normalizedUsername,
+  password:editingUser?String(f.get('password')||''):String(f.get('password')||'123456'),
   fullname:f.get('fullname')||'',
+  badgeNumber:f.get('badgeNumber')||'',
   phone:f.get('phone')||'',
   rank:f.get('rank')||'',
   position:f.get('position')||'',
@@ -721,6 +928,7 @@ async function saveUser(){
   if(user.u!=='admin')user.u=payload.username;
   user.password=f.get('password');
   user.name=f.get('fullname');
+  const badgeNumber=f.get('badgeNumber')||'';
   user.phone=user.u==='admin'?'':f.get('phone')||'';
   user.rank=user.u==='admin'?'':f.get('rank');
   user.pos=user.u==='admin'?'':f.get('position');
@@ -730,6 +938,7 @@ async function saveUser(){
    const profile=(oldUsername!==user.u && staffProfiles.find(item=>item.username===oldUsername)) || getStaffProfile(user.u);
    profile.username=user.u;
    profile.sections['Thông tin cá nhân']['Họ và tên']=user.name;
+   profile.sections['Thông tin cá nhân']['Số hiệu']=badgeNumber;
    profile.sections['Thông tin cá nhân']['Số điện thoại']=user.phone;
    profile.sections['Thông tin công tác']['Cấp bậc']=user.rank;
    profile.sections['Thông tin công tác']['Chức vụ hiện tại']=user.pos;
@@ -744,11 +953,12 @@ async function saveUser(){
   }
   if(currentUser?.u===user.u){$('#currentUser').textContent=user.name}
  }else{
-  const username=payload.username;
-  if(accounts.some(a=>a.u===username)){toast('Tên đăng nhập đã tồn tại');return}
+ const username=payload.username;
+ if(accounts.some(a=>a.u===username)){toast('Tên đăng nhập đã tồn tại');return}
  accounts.unshift({u:username,password:f.get('password'),name:f.get('fullname'),rank:f.get('rank'),pos:f.get('position'),team:f.get('team'),phone:f.get('phone')||'',status:f.get('status'),role:'Cán bộ nghiệp vụ'});
   accountPerms[username]=[];
-  getStaffProfile(username);
+  const profile=getStaffProfile(username);
+  profile.sections['Thông tin cá nhân']['Số hiệu']=payload.badgeNumber;
  }
  $('#userModal').classList.remove('show');
  renderAccounts();
@@ -957,18 +1167,67 @@ function renderPerms(username){
   'Quản lý danh mục':'list-plus',
   'Quản lý module':'layout-dashboard',
   'Quản lý danh mục tài sản':'boxes',
-  'Quản lý cán bộ':'contact-round'
+ 'Quản lý cán bộ':'contact-round'
  };
- $('#permList').innerHTML=perms.map(p=>`
+ $('#permList').innerHTML=perms.map(p=>{
+  const moduleKey=permissionModuleMap[p]||'';
+  const module=moduleDefinitions.find(item=>item.key===moduleKey);
+  const displayName=module?.name||p;
+  const icon=module?.icon||icons[p]||'circle-check';
+  return `
   <label class="perm-row">
-   <span><input type="checkbox" value="${escapeHtml(p)}" ${selected.includes(p)?'checked':''}/><i data-lucide="${icons[p]||'circle-check'}"></i> ${escapeHtml(p)}</span>
-   <button class="link-btn icon-button" data-delete-permission="${escapeHtml(p)}" type="button"><i data-lucide="trash-2"></i>Xóa</button>
-  </label>`).join('');
+   <span><input type="checkbox" value="${escapeHtml(p)}" ${selected.includes(p)?'checked':''}/><i data-lucide="${escapeHtml(icon)}"></i> ${escapeHtml(displayName)}</span>
+   <span class="permission-actions">
+    ${moduleKey?`<button class="link-btn icon-button" data-edit-permission-module="${escapeHtml(moduleKey)}" type="button"><i data-lucide="square-pen"></i>Sửa</button>`:''}
+    <button class="link-btn icon-button" data-delete-permission="${escapeHtml(p)}" type="button"><i data-lucide="trash-2"></i>Xóa</button>
+   </span>
+  </label>`;
+ }).join('');
  permissionsDirty=false;
  setPermissionSaveState(false);
  $all('#permList input[type="checkbox"]').forEach(input=>input.onchange=()=>{permissionsDirty=true;setPermissionSaveState(true)});
+ $all('[data-edit-permission-module]').forEach(button=>button.onclick=()=>editPermissionModuleName(button.dataset.editPermissionModule));
  $all('[data-delete-permission]').forEach(button=>button.onclick=()=>deletePermission(button.dataset.deletePermission));
  refreshIcons();
+}
+async function editPermissionModuleName(moduleKey){
+ const module=moduleDefinitions.find(item=>item.key===moduleKey);
+ if(!module)return;
+ editingPermissionModuleKey=moduleKey;
+ $('#moduleNameInput').value=module.name;
+ $('#moduleNameModal').classList.add('show');
+ $('#moduleNameModal').setAttribute('aria-hidden','false');
+ $('#moduleNameInput').focus();
+}
+function closeModuleNameModal(){
+ editingPermissionModuleKey=null;
+ $('#moduleNameModal').classList.remove('show');
+ $('#moduleNameModal').setAttribute('aria-hidden','true');
+}
+async function savePermissionModuleName(event){
+ event?.preventDefault();
+ const moduleKey=editingPermissionModuleKey;
+ const module=moduleDefinitions.find(item=>item.key===moduleKey);
+ if(!module)return;
+ const trimmedName=$('#moduleNameInput').value.trim();
+ if(!trimmedName){toast('Tên module không được trống');return}
+ if(location.protocol!=='file:'){
+  try{
+   await sendApi(`/api/modules/${encodeURIComponent(moduleKey)}`,'PUT',{name:trimmedName});
+   await loadDataFromDatabase();
+  }catch(error){
+   toast(error.message||'Không cập nhật được tên module');
+   return;
+  }
+ }else{
+  module.name=trimmedName;
+ }
+ syncModulePresentation();
+ renderModuleSettings();
+ renderRoles();
+ updateModuleVisibility();
+ closeModuleNameModal();
+ toast('Đã đồng bộ tên module');
 }
 async function deletePermission(permissionName){
  if(!confirm(`Xóa quyền "${permissionName}"?`))return;
@@ -1130,10 +1389,11 @@ function renderStaffDirectory(){
  if(title)title.textContent=isAdminUser()?'Quản lý cán bộ theo đội':'Hồ sơ cán bộ của tôi';
  if(!isAdminUser()){
   selectedStaff=currentUser?.u||'';
-  const account=currentUser;
-  const profile=getStaffProfile(account.u);
-  const personal=profile.sections['Thông tin cá nhân']||{};
-  const work=profile.sections['Thông tin công tác']||{};
+ const account=currentUser;
+ const profile=getStaffProfile(account.u);
+ const personal=profile.sections['Thông tin cá nhân']||{};
+ const work=profile.sections['Thông tin công tác']||{};
+ const badgeNumber=getStaffBadgeNumber(account.u);
   container.innerHTML=`<div class="staff-self-card">
    <div class="staff-self-top">
     <span class="profile-photo large">${profile.photo?`<img src="${profile.photo}" alt="Ảnh ${escapeHtml(account.name)}"/>`:escapeHtml(getInitials(account.name))}</span>
@@ -1144,7 +1404,7 @@ function renderStaffDirectory(){
     </div>
    </div>
    <div class="staff-self-meta">
-    <span><i data-lucide="id-card"></i><small>Số hiệu</small><strong>${escapeHtml(account.u)}</strong></span>
+    <span><i data-lucide="id-card"></i><small>Số hiệu</small><strong>${escapeHtml(badgeNumber||'--')}</strong></span>
     <span><i data-lucide="phone"></i><small>Liên hệ</small><strong>${escapeHtml(personal['Số điện thoại']||account.phone||'Chưa cập nhật')}</strong></span>
     <span><i data-lucide="building-2"></i><small>Đơn vị</small><strong>${escapeHtml(work['Đơn vị công tác']||account.team||'Chưa cập nhật đội')}</strong></span>
     <span><i data-lucide="${account.status==='Hoạt động'?'check-circle':'lock'}"></i><small>Trạng thái</small><strong>${escapeHtml(account.status)}</strong></span>
@@ -1189,10 +1449,11 @@ function renderStaffDirectory(){
    ${filtered.map(account=>{
   const profile=getStaffProfile(account.u);
   const personal=profile.sections['Thông tin cá nhân']||{};
+  const badgeNumber=getStaffBadgeNumber(account.u);
   const work=profile.sections['Thông tin công tác']||{};
   return `<button class="staff-card ${account.u===selectedStaff?'active':''}" data-staff="${account.u}">
    <span class="profile-photo">${profile.photo?`<img src="${profile.photo}" alt="Ảnh ${escapeHtml(account.name)}"/>`:escapeHtml(getInitials(account.name))}</span>
-   <span><strong>${escapeHtml(personal['Họ và tên']||account.name)}</strong><small><i data-lucide="id-card"></i>Số hiệu: ${escapeHtml(account.u)}</small><small><i data-lucide="phone"></i>SĐT: ${escapeHtml(personal['Số điện thoại']||account.phone||'Chưa cập nhật')}</small></span>
+   <span><strong>${escapeHtml(personal['Họ và tên']||account.name)}</strong><small><i data-lucide="id-card"></i>Số hiệu: ${escapeHtml(badgeNumber||'--')}</small><small><i data-lucide="phone"></i>SĐT: ${escapeHtml(personal['Số điện thoại']||account.phone||'Chưa cập nhật')}</small></span>
   </button>`;
  }).join('') || '<p class="section-note">Không tìm thấy cán bộ phù hợp trong đội này.</p>'}
   </div>`;
@@ -1228,6 +1489,7 @@ function renderStaffProfileDetail(username){
  if(!account || !profile){$('#staffProfileDetail').innerHTML='<p class="section-note">Chưa có dữ liệu cán bộ.</p>';return}
  const personal=profile.sections['Thông tin cá nhân']||{};
  const work=profile.sections['Thông tin công tác']||{};
+ const badgeNumber=getStaffBadgeNumber(username);
  const blocks=Object.keys(staffTabs).map(tab=>{
   const data=profile.sections[tab]||{};
   const rows=staffTabs[tab].map(field=>`<div class="detail-row"><span>${escapeHtml(field)}</span><span>${escapeHtml(data[field]||'--')}</span></div>`).join('');
@@ -1242,6 +1504,7 @@ function renderStaffProfileDetail(username){
     <p>${escapeHtml(work['Cấp bậc']||account.rank||'--')} · ${escapeHtml(work['Chức vụ hiện tại']||account.pos||'--')} · ${escapeHtml(work['Đơn vị công tác']||'--')}</p>
     <div class="profile-mini-grid">
      <span><small>Tài khoản</small><strong>${escapeHtml(account.u)}</strong></span>
+     <span><small>Số hiệu</small><strong>${escapeHtml(badgeNumber||'--')}</strong></span>
      <span><small>Vai trò</small><strong>${escapeHtml(account.role)}</strong></span>
      <span><small>Trạng thái</small><strong>${escapeHtml(account.status)}</strong></span>
     </div>
@@ -1335,6 +1598,7 @@ function renderDynamicModuleShells(){
    main.appendChild(section);
   }
  });
+ syncModulePresentation();
  refreshIcons();
 }
 async function addModule(){
@@ -1392,6 +1656,8 @@ async function editModule(key){
   module.description=description.trim();
  }
  renderModuleSettings();
+ renderRoles();
+ syncModulePresentation();
  updateModuleVisibility();
  toast('Đã cập nhật module');
 }
@@ -2143,13 +2409,22 @@ function getAssignedUnitForAccount(username=currentUser?.u){
  return assets.find(asset=>names.includes(normalizeIdentity(asset.owner)))?.unit || '';
 }
 function getManagedUnitsForCurrentUser(){
- if(isAdminUser())return [...new Set(teamCatalog.map(team=>team.name).filter(Boolean))];
- const unit=getAssignedUnitForAccount();
- return unit?[unit]:[];
+ return [...new Set(teamCatalog.map(team=>team.name).filter(Boolean))];
 }
 function getHandoverScopeUnits(){
  const units=getManagedUnitsForCurrentUser();
  return units.length?units:['Chưa phân đơn vị'];
+}
+function getHandoverDepartments(){
+ return departmentCatalog.length?departmentCatalog:[];
+}
+function getTeamsForDepartment(departmentId){
+ return teamCatalog.filter(team=>String(team.department_id||'')===String(departmentId));
+}
+function getDepartmentNameForTeam(teamName){
+ const team=teamCatalog.find(item=>item.name===teamName);
+ const department=departmentCatalog.find(item=>String(item.id)===String(team?.department_id));
+ return department?.name || '';
 }
 function getHandoverAssets(recipient){
  const ids=new Set(recipient.assetIds||[]);
@@ -2160,14 +2435,37 @@ function getHandoverVisibleRecipients(){
  if(isAdminUser())return handoverRecipients;
  return handoverRecipients.filter(recipient=>units.includes(recipient.unit));
 }
+function renderHandoverDepartmentOptions(selected=''){
+ const select=$('#handoverDepartmentSelect');
+ if(!select)return;
+ const unitTypeSelect=$('#handoverUnitType');
+ const allDepartments=getHandoverDepartments();
+ const hasSelected=selected!=='' && selected!==null && selected!==undefined;
+ const inferredDepartment=hasSelected
+  ? allDepartments.find(department=>String(department.id)===String(selected))
+  : null;
+ if(unitTypeSelect && inferredDepartment)unitTypeSelect.value=inferredDepartment.unit_type||'Cấp phòng';
+ const unitType=unitTypeSelect?.value || inferredDepartment?.unit_type || 'Cấp phòng';
+ const departments=allDepartments.filter(department=>(department.unit_type||'Cấp phòng')===unitType);
+ const current=hasSelected ? selected : (select.value || departments[0]?.id || '');
+ select.innerHTML=departments.length
+  ? departments.map(department=>`<option value="${escapeHtml(department.id)}">${escapeHtml(department.name)}</option>`).join('')
+  : `<option value="">Chưa có ${unitType==='Cấp xã'?'cấp xã':'cấp phòng'}</option>`;
+ select.value=departments.some(department=>String(department.id)===String(current))?String(current):String(departments[0]?.id||'');
+}
 function renderHandoverUnitOptions(selected=''){
  const select=$('#handoverUnitSelect');
  if(!select)return;
- const units=getHandoverScopeUnits();
- const value=selected || select.value || units[0] || '';
- select.innerHTML=units.map(unit=>`<option value="${escapeHtml(unit)}">${escapeHtml(unit)}</option>`).join('');
- select.value=units.includes(value)?value:(units[0]||'');
- select.disabled=!isAdminUser();
+ const departmentId=$('#handoverDepartmentSelect')?.value || getHandoverDepartments()[0]?.id || '';
+ const teams=getTeamsForDepartment(departmentId);
+ const current=selected || select.value || teams[0]?.name || '';
+ const label=(departmentCatalog.find(department=>String(department.id)===String(departmentId))?.unit_type||'Cấp phòng')==='Cấp xã'?'trạm':'đội';
+ const labelNode=$('#handoverAssignmentLabel');
+ if(labelNode)labelNode.textContent=`${label[0].toUpperCase()}${label.slice(1)} trực thuộc`;
+ select.innerHTML=teams.length
+  ? teams.map(team=>`<option value="${escapeHtml(team.name)}">${escapeHtml(team.name)}</option>`).join('')
+  : `<option value="">Chưa có ${label}</option>`;
+ select.value=teams.some(team=>team.name===current)?current:(teams[0]?.name||'');
 }
 function renderHandoverAssetPicker(){
  const select=$('#handoverAssetSelect');
@@ -2243,28 +2541,43 @@ function renderHandoverList(){
   </div>`;
  list.innerHTML=visibleRecipients.map(recipient=>{
   const assignedAssets=getHandoverAssets(recipient);
-  return `<article class="handover-person-card">
-   <div class="handover-person-head">
-    <span class="avatar-tile">${escapeHtml(getInitials(recipient.name))}</span>
+  const expanded=String(recipient.id)===String(selectedHandoverRecipientId);
+  const departmentName=getDepartmentNameForTeam(recipient.unit);
+  const unitPath=[departmentName,recipient.unit].filter(Boolean).join(' · ');
+  return `<article class="handover-person-card ${expanded?'active':''}" data-handover-recipient="${escapeHtml(recipient.id)}">
+   <button class="handover-person-head" type="button" data-handover-toggle="${escapeHtml(recipient.id)}">
     <div>
      <strong>${escapeHtml(recipient.name)}</strong>
-     <small>${escapeHtml(recipient.unit)} · Số hiệu: ${escapeHtml(recipient.badge||'Chưa cập nhật')}</small>
+     <small>${escapeHtml(unitPath||recipient.unit||'Chưa phân đơn vị')} · Số hiệu: ${escapeHtml(recipient.badge||'--')}</small>
      <small><i data-lucide="phone"></i> ${escapeHtml(recipient.phone||'Chưa cập nhật')}</small>
     </div>
-    <b>${assignedAssets.length} thiết bị</b>
-   </div>
-   <div class="handover-document">
-   <span><i data-lucide="file-text"></i> ${escapeHtml(recipient.handoverNo||'Chưa có số biên bản')}</span>
-   <span><i data-lucide="calendar-days"></i> ${escapeHtml(recipient.handoverDate||'Chưa cập nhật ngày')}</span>
-    ${recipient.fileName?`<a href="${escapeHtml(recipient.fileData||'#')}" download="${escapeHtml(recipient.fileName)}"><i data-lucide="paperclip"></i> ${escapeHtml(recipient.fileName)}</a>`:''}
-   </div>
-   <div class="asset-chip-list">
-    ${assignedAssets.length?assignedAssets.map(asset=>`<span class="asset-chip"><i data-lucide="package"></i>${escapeHtml(asset.id)} · ${escapeHtml(asset.name)}</span>`).join(''):'<span class="section-note">Chưa gán thiết bị.</span>'}
-   </div>
-   ${recipient.note?`<p class="section-note">${escapeHtml(recipient.note)}</p>`:''}
+    <span class="handover-count">${assignedAssets.length} thiết bị</span>
+    <i data-lucide="${expanded?'chevron-up':'chevron-down'}"></i>
+   </button>
+   ${expanded?`<div class="handover-detail-panel">
+    <div class="handover-document">
+     <span><i data-lucide="file-text"></i> ${escapeHtml(recipient.handoverNo||'Chưa có số biên bản')}</span>
+     <span><i data-lucide="calendar-days"></i> ${escapeHtml(recipient.handoverDate||'Chưa cập nhật ngày')}</span>
+     ${recipient.fileName?`<a href="${escapeHtml(recipient.fileData||'#')}" download="${escapeHtml(recipient.fileName)}"><i data-lucide="paperclip"></i> ${escapeHtml(recipient.fileName)}</a>`:''}
+    </div>
+    <div class="handover-asset-table">
+     <table>
+      <thead><tr><th>Mã TS</th><th>Tên thiết bị</th><th>Loại</th><th>Trạng thái</th></tr></thead>
+      <tbody>${assignedAssets.length?assignedAssets.map(asset=>`<tr><td>${escapeHtml(asset.id)}</td><td>${escapeHtml(asset.name)}</td><td>${escapeHtml(asset.type||'--')}</td><td>${escapeHtml(asset.status||'--')}</td></tr>`).join(''):'<tr><td colspan="4">Chưa gán thiết bị.</td></tr>'}</tbody>
+     </table>
+    </div>
+    ${recipient.note?`<p class="section-note">${escapeHtml(recipient.note)}</p>`:''}
+   </div>`:''}
   </article>`;
  }).join('') || '<p class="section-note">Chưa có cán bộ nhận bàn giao trong phạm vi này.</p>';
- renderHandoverUnitOptions();
+ $all('[data-handover-toggle]').forEach(button=>button.onclick=()=>{
+  selectedHandoverRecipientId=String(selectedHandoverRecipientId)===String(button.dataset.handoverToggle)?'':button.dataset.handoverToggle;
+  renderHandoverList();
+ });
+ const selectedUnit=$('#handoverUnitSelect')?.value||'';
+ const selectedDepartmentId=teamCatalog.find(team=>team.name===selectedUnit)?.department_id || $('#handoverDepartmentSelect')?.value || '';
+ renderHandoverDepartmentOptions(selectedDepartmentId);
+ renderHandoverUnitOptions(selectedUnit);
  selectedHandoverAssetIds=selectedHandoverAssetIds.filter(assetId=>assets.some(asset=>asset.id===assetId && asset.unit===($('#handoverUnitSelect')?.value||'')));
  renderHandoverAssetPicker();
  refreshIcons();
@@ -2398,13 +2711,12 @@ function renderAssetRows(){
  const ownerFilter=$('#assetOwnerFilter')?.value||'';
  const unitFilter=$('#assetUnitFilter')?.value||'';
  const visibleAssets=assets.filter(a=>{
-  const belongsToUser=isAdminUser() || isAssetAssignedToCurrentUser(a);
   const textMatch=!q || JSON.stringify(a).toLowerCase().includes(q);
   const typeMatch=!typeFilter || a.type===typeFilter;
   const statusMatch=!statusFilter || a.status===statusFilter;
   const ownerMatch=!ownerFilter || a.owner===ownerFilter;
   const unitMatch=!unitFilter || a.unit===unitFilter;
-  return belongsToUser && textMatch && typeMatch && statusMatch && ownerMatch && unitMatch;
+  return textMatch && typeMatch && statusMatch && ownerMatch && unitMatch;
  });
  populateAssetListFilters();
  $('#assetRows').innerHTML=visibleAssets.map(a=>`
@@ -2427,7 +2739,6 @@ function renderAssetRows(){
  refreshIcons();
 }
 function populateAssetListFilters(){
- const scopedAssets=getScopedAssets();
  const configs=[
   ['#assetTypeFilter','Tất cả chủng loại',asset=>asset.type],
   ['#assetStatusFilter','Tất cả trạng thái',asset=>asset.status],
@@ -2435,10 +2746,10 @@ function populateAssetListFilters(){
   ['#assetUnitFilter','Tất cả đội/đơn vị',asset=>asset.unit]
  ];
  configs.forEach(([selector,label,getValue])=>{
-  const select=$(selector);
-  if(!select)return;
-  const current=select.value;
-  const values=[...new Set(scopedAssets.map(getValue).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi'));
+ const select=$(selector);
+ if(!select)return;
+ const current=select.value;
+  const values=[...new Set(assets.map(getValue).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi'));
   select.innerHTML=`<option value="">${label}</option>`+values.map(value=>`<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('');
   select.value=values.includes(current)?current:'';
  });
@@ -2973,17 +3284,7 @@ async function loadDataFromDatabase(){
   apiPermissions.forEach(permission=>{
    if(permission.module_key)permissionModuleMap[permission.name]=permission.module_key;
   });
-  accounts.splice(0,accounts.length,...apiAccounts.map(account=>({
-   u:account.username,
-   password:account.password||'123456',
-   name:account.full_name,
-   rank:account.rank||'',
-   pos:account.position||'',
-   team:account.team||'',
-   phone:account.phone||'',
-   status:account.status||'Hoạt động',
-   role:account.role_name||account.position||'Cán bộ nghiệp vụ'
-  })));
+  accounts.splice(0,accounts.length,...apiAccounts.map(normalizeApiAccount));
   assets.splice(0,assets.length,...apiAssets.map(asset=>({
    id:asset.asset_code||String(asset.id),
    name:asset.name||'',
@@ -3003,6 +3304,7 @@ async function loadDataFromDatabase(){
    sections:{
     'Thông tin cá nhân':{
      'Họ và tên':staff.full_name||'',
+     'Số hiệu':staff.badge_number||'',
      'Ngày sinh':formatApiDate(staff.birth_date),
      'Giới tính':staff.gender||'',
      'Dân tộc':staff.ethnicity||'',
@@ -3093,7 +3395,7 @@ $('#deleteSelectedAccounts').onclick=deleteSelectedAccounts;
 $('#openUserModal').onclick=()=>openUserModal();
 $('#closeUserModal').onclick=$('#cancelUser').onclick=()=>$('#userModal').classList.remove('show');
 $('#createUser').onclick=saveUser;
-$('#newUserForm').username.oninput=event=>{event.target.value=sanitizeUsernameInput(event.target.value)};
+$('#newUserForm').username.oninput=updateUsernameAvailability;
 $('#userUnitType').onchange=()=>{
  const form=$('#newUserForm');
  form.departmentId.value='';
@@ -3133,13 +3435,18 @@ $('#resetAsset').onclick=e=>{e.preventDefault();$('#assetForm').reset()};
 $('#downloadAssetTemplate').onclick=downloadAssetTemplate;
 $('#importAssets').onclick=openAssetImport;
 $('#assetExcelInput').onchange=importAssetsFromExcel;
+$('#handoverUnitType').onchange=()=>{selectedHandoverAssetIds=[];renderHandoverDepartmentOptions('');renderHandoverUnitOptions('');renderHandoverAssetPicker()};
+$('#handoverDepartmentSelect').onchange=()=>{selectedHandoverAssetIds=[];renderHandoverUnitOptions();renderHandoverAssetPicker()};
 $('#handoverUnitSelect').onchange=()=>{selectedHandoverAssetIds=[];renderHandoverAssetPicker()};
 $('#handoverAssetSelect').onchange=addSelectedHandoverAsset;
-$('#addHandoverAsset').onclick=addSelectedHandoverAsset;
 $('#resetHandoverForm').onclick=()=>{$('#handoverForm').reset();selectedHandoverAssetIds=[];renderHandoverList()};
 $('#saveHandoverRecipient').onclick=saveHandoverRecipient;
 $('#closeAssetModal').onclick=$('#cancelAssetEdit').onclick=()=>$('#assetModal').classList.remove('show');
 $('#updateAsset').onclick=updateAsset;
+$('#closeModuleNameModal').onclick=$('#cancelModuleNameEdit').onclick=closeModuleNameModal;
+$('#moduleNameForm').onsubmit=savePermissionModuleName;
+$('#closeAccountTransferModal').onclick=$('#cancelAccountTransfer').onclick=closeAccountTransferModal;
+$('#accountTransferForm').onsubmit=confirmAccountTransfer;
 $('#createInventory').onclick=createInventory;
 ['#activityUserFilter','#activityModuleFilter','#activityActionFilter','#activityDateFrom','#activityDateTo'].forEach(selector=>{
  const input=$(selector);

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { pool, query } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -52,6 +53,27 @@ function getClientIp(req) {
   return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
 }
 
+function hashPassword(password) {
+  const salt = randomBytes(16).toString('hex');
+  const hash = scryptSync(String(password || ''), salt, 64).toString('hex');
+  return `scrypt$${salt}$${hash}`;
+}
+
+function isHashedPassword(value) {
+  return /^scrypt\$[a-f0-9]{32}\$[a-f0-9]{128}$/i.test(String(value || ''));
+}
+
+function verifyPassword(password, stored) {
+  const storedText = String(stored || '');
+  if (isHashedPassword(storedText)) {
+    const [, salt, expectedHex] = storedText.split('$');
+    const expected = Buffer.from(expectedHex, 'hex');
+    const actual = scryptSync(String(password || ''), salt, expected.length);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  }
+  return storedText === String(password || '');
+}
+
 async function logActivity(req, {
   action,
   moduleKey = null,
@@ -76,9 +98,72 @@ async function logActivity(req, {
   ]);
 }
 
+async function upgradePlaintextPasswords(client = pool) {
+  const result = await client.query('select id, password_hash from users');
+  for (const row of result.rows) {
+    if (isHashedPassword(row.password_hash)) continue;
+    await client.query(
+      'update users set password_hash = $2, updated_at = now() where id = $1',
+      [row.id, hashPassword(row.password_hash)]
+    );
+  }
+}
+
 function csvEscape(value) {
   const text = String(value ?? '');
   return `"${text.replace(/"/g, '""')}"`;
+}
+
+async function syncModulePermissions(client = pool) {
+  const modules = await client.query(`
+    select id, module_key, name
+    from modules
+    where module_key not in ('permissions', 'staff')
+    order by id
+  `);
+  for (const module of modules.rows) {
+    const linked = await client.query(
+      'select id, name from permissions where module_id = $1 order by id',
+      [module.id]
+    );
+    let permissionId = linked.rows[0]?.id;
+    if (!permissionId) {
+      const existingName = await client.query(
+        'select id from permissions where name = $1 limit 1',
+        [module.name]
+      );
+      if (existingName.rows[0]?.id) {
+        permissionId = existingName.rows[0].id;
+        await client.query('update permissions set module_id = $2 where id = $1', [permissionId, module.id]);
+      } else {
+        const inserted = await client.query(
+          'insert into permissions (module_id, name) values ($1, $2) returning id',
+          [module.id, module.name]
+        );
+        permissionId = inserted.rows[0].id;
+      }
+    }
+    for (const duplicate of linked.rows.slice(1)) {
+      await client.query(`
+        insert into user_permissions (user_id, permission_id)
+        select user_id, $1
+        from user_permissions
+        where permission_id = $2
+        on conflict do nothing
+      `, [permissionId, duplicate.id]);
+      await client.query('delete from permissions where id = $1', [duplicate.id]);
+    }
+    const nameConflict = await client.query(
+      'select id from permissions where name = $1 and id <> $2 limit 1',
+      [module.name, permissionId]
+    );
+    if (!nameConflict.rows.length) {
+      await client.query(
+        'update permissions set name = $2, module_id = $3 where id = $1',
+        [permissionId, module.name, module.id]
+      );
+    }
+  }
 }
 
 async function ensureSchema() {
@@ -128,6 +213,21 @@ async function ensureSchema() {
   `);
   await pool.query('create index if not exists idx_inventory_sessions_date on inventory_sessions (inventory_date desc, id desc)');
   await pool.query('create index if not exists idx_inventory_items_session on inventory_items (session_id)');
+  await pool.query('alter table if exists staff_profiles add column if not exists badge_number text');
+  await pool.query(`
+    create table if not exists asset_assignments (
+      id bigserial primary key,
+      asset_id bigint not null references assets(id) on delete cascade,
+      assigned_to_user_id bigint references users(id) on delete set null,
+      assigned_to_team_id bigint references teams(id) on delete set null,
+      assigned_at date not null default current_date,
+      returned_at date,
+      note text,
+      created_at timestamptz not null default now()
+    )
+  `);
+  await pool.query('create index if not exists idx_asset_assignments_asset on asset_assignments (asset_id)');
+  await pool.query('create index if not exists idx_asset_assignments_user on asset_assignments (assigned_to_user_id)');
   await pool.query(`
     create table if not exists handover_recipients (
       id bigserial primary key,
@@ -285,15 +385,18 @@ async function ensureSchema() {
         ('staffDirectory', 'Quản lý cán bộ'),
         ('catalogManager', 'Quản lý danh mục'),
         ('moduleManager', 'Quản lý module'),
-        ('assetCategoryManager', 'Quản lý danh mục tài sản'),
-        ('reports', 'Báo cáo thống kê'),
-        ('settings', 'Cài đặt giao diện'),
-        ('activityLog', 'Log lịch sử')
+        ('assetCategoryManager', 'Danh mục tài sản'),
+        ('reports', 'Báo cáo'),
+        ('settings', 'Cài đặt'),
+        ('activityLog', 'Log lịch sử'),
+        ('assets', 'Quản lý Tài sản')
     ) as v(module_key, permission_name)
     join modules m on m.module_key = v.module_key
     on conflict (name) do update
     set module_id = excluded.module_id
   `);
+  await syncModulePermissions();
+  await upgradePlaintextPasswords();
 }
 
 app.get('/api/health', asyncHandler(async (_req, res) => {
@@ -386,7 +489,6 @@ app.get('/api/accounts', asyncHandler(async (_req, res) => {
     select
       u.id,
       u.username,
-      u.password_hash as password,
       u.full_name,
       u.phone,
       coalesce(r.name, '') as rank,
@@ -404,6 +506,99 @@ app.get('/api/accounts', asyncHandler(async (_req, res) => {
     order by u.is_admin desc, u.id
   `);
   res.json(rows);
+}));
+
+app.get('/api/accounts/check-username', asyncHandler(async (req, res) => {
+  const username = normalizeUsername(req.query?.username);
+  const currentUsername = normalizeUsername(req.query?.currentUsername);
+  if (!username) {
+    res.json({ ok: true, username, available: false, reason: 'Vui lòng nhập tên đăng nhập' });
+    return;
+  }
+  if (!isValidUsername(username)) {
+    res.json({
+      ok: true,
+      username,
+      available: false,
+      reason: 'Tên đăng nhập chỉ dùng chữ thường không dấu, số, dấu chấm, gạch dưới hoặc gạch ngang, dài 3-32 ký tự'
+    });
+    return;
+  }
+  const rows = await query('select username, is_deleted from users where username = $1 limit 1', [username]);
+  if (!rows.length || (currentUsername && rows[0].username === currentUsername)) {
+    res.json({ ok: true, username, available: true });
+    return;
+  }
+  res.json({
+    ok: true,
+    username,
+    available: false,
+    reason: rows[0].is_deleted
+      ? 'Tên đăng nhập đã tồn tại trong dữ liệu đã xóa mềm'
+      : 'Tên đăng nhập đã tồn tại'
+  });
+}));
+
+app.post('/api/login', asyncHandler(async (req, res) => {
+  const username = normalizeUsername(req.body?.username);
+  const password = String(req.body?.password || '');
+  if (!username || !password) {
+    res.status(400).json({ error: 'Thiếu tên đăng nhập hoặc mật khẩu' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`
+      select
+        u.id,
+        u.username,
+        u.password_hash,
+        u.full_name,
+        u.phone,
+        coalesce(r.name, '') as rank,
+        coalesce(p.name, '') as position,
+        coalesce(t.name, '') as team,
+        u.role_name,
+        u.status,
+        u.is_admin
+      from users u
+      left join ranks r on r.id = u.rank_id
+      left join positions p on p.id = u.position_id
+      left join teams t on t.id = u.team_id
+      where u.username = $1 and u.is_deleted = false
+      limit 1
+    `, [username]);
+    const user = result.rows[0];
+    if (!user || !verifyPassword(password, user.password_hash)) {
+      await client.query('rollback');
+      res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu' });
+      return;
+    }
+    if (user.status !== 'Hoạt động') {
+      await client.query('rollback');
+      res.status(403).json({ error: 'Tài khoản đang bị tạm khóa' });
+      return;
+    }
+    if (!isHashedPassword(user.password_hash)) {
+      await client.query('update users set password_hash = $2, updated_at = now() where id = $1', [user.id, hashPassword(password)]);
+    }
+    await logActivity(req, {
+      action: 'Đăng nhập',
+      moduleKey: 'login',
+      moduleName: 'Đăng nhập hệ thống',
+      detail: `Đăng nhập tài khoản ${username}`,
+      metadata: { username }
+    }, client);
+    await client.query('commit');
+    delete user.password_hash;
+    res.json({ ok: true, account: user });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
 }));
 
 async function findCatalogId(client, table, name) {
@@ -529,6 +724,7 @@ app.post('/api/accounts', asyncHandler(async (req, res) => {
     password,
     fullname,
     phone = '',
+    badgeNumber = '',
     rank = '',
     position = '',
     team = '',
@@ -560,7 +756,7 @@ app.post('/api/accounts', asyncHandler(async (req, res) => {
       returning id
     `, [
       normalizedUsername,
-      password,
+      hashPassword(password),
       fullname.trim(),
       phone || null,
       rankId,
@@ -569,10 +765,10 @@ app.post('/api/accounts', asyncHandler(async (req, res) => {
       status === 'Tạm khóa' ? 'Tạm khóa' : 'Hoạt động'
     ]);
     await client.query(`
-      insert into staff_profiles (user_id)
-      values ($1)
+      insert into staff_profiles (user_id, badge_number)
+      values ($1, $2)
       on conflict (user_id) do nothing
-    `, [inserted.rows[0].id]);
+    `, [inserted.rows[0].id, toNullableText(badgeNumber)]);
     await logActivity(req, {
       action: 'Tạo tài khoản',
       moduleKey: 'permissions',
@@ -601,6 +797,7 @@ app.put('/api/accounts/:username', asyncHandler(async (req, res) => {
     password,
     fullname,
     phone = '',
+    badgeNumber = '',
     rank = '',
     position = '',
     team = '',
@@ -613,7 +810,7 @@ app.put('/api/accounts/:username', asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('begin');
-    const current = await client.query('select id, is_admin from users where username = $1 and is_deleted = false', [username]);
+    const current = await client.query('select id, is_admin, password_hash from users where username = $1 and is_deleted = false', [username]);
     if (!current.rows.length) {
       await client.query('rollback');
       res.status(404).json({ error: 'Không tìm thấy tài khoản' });
@@ -629,6 +826,7 @@ app.put('/api/accounts/:username', asyncHandler(async (req, res) => {
     const rankId = user.is_admin ? null : await findCatalogId(client, 'ranks', rank);
     const positionId = user.is_admin ? null : await findCatalogId(client, 'positions', position);
     const teamId = user.is_admin ? null : await resolveTeamIdForAccount(client, { team, unitType, departmentId, departmentName });
+    const nextPasswordHash = password ? hashPassword(password) : user.password_hash;
     await client.query(`
       update users
       set
@@ -644,7 +842,7 @@ app.put('/api/accounts/:username', asyncHandler(async (req, res) => {
       where username = $1
     `, [
       username,
-      password,
+      nextPasswordHash,
       fullname?.trim() || (user.is_admin ? 'Admin' : nextUsername),
       user.is_admin ? null : phone || null,
       rankId,
@@ -655,10 +853,11 @@ app.put('/api/accounts/:username', asyncHandler(async (req, res) => {
     ]);
     if (!user.is_admin) {
       await client.query(`
-        insert into staff_profiles (user_id)
-        values ($1)
+        insert into staff_profiles (user_id, badge_number)
+        values ($1, $2)
         on conflict (user_id) do nothing
-      `, [user.id]);
+      `, [user.id, toNullableText(badgeNumber)]);
+      await client.query('update staff_profiles set badge_number = $2, updated_at = now() where user_id = $1', [user.id, toNullableText(badgeNumber)]);
     }
     await logActivity(req, {
       action: 'Cập nhật tài khoản',
@@ -681,32 +880,224 @@ app.put('/api/accounts/:username', asyncHandler(async (req, res) => {
   }
 }));
 
+function normalizeDeletionUsernames(value) {
+  return [...new Set(
+    (Array.isArray(value) ? value : [])
+      .map((item) => String(item).trim())
+      .filter((item) => item && item !== 'admin')
+  )];
+}
+
+async function getAccountDeletionImpact(client, usernames) {
+  if (!usernames.length) return { accounts: [], assets: [], eligibleRecipients: [] };
+  const accounts = await client.query(`
+    select id, username, full_name
+    from users
+    where username = any($1::text[])
+      and is_admin = false
+      and is_deleted = false
+    order by full_name
+  `, [usernames]);
+  const userIds = accounts.rows.map((row) => row.id);
+  const assets = userIds.length
+    ? await client.query(`
+        select
+          a.id,
+          a.asset_code,
+          a.name,
+          a.manager_user_id,
+          u.username as manager_username,
+          u.full_name as manager_name
+        from assets a
+        join users u on u.id = a.manager_user_id
+        where a.manager_user_id = any($1::bigint[])
+        order by u.full_name, a.asset_code
+      `, [userIds])
+    : { rows: [] };
+  const eligibleRecipients = await client.query(`
+    select
+      u.username,
+      u.full_name,
+      coalesce(t.name, '') as team
+    from users u
+    left join teams t on t.id = u.team_id
+    where u.is_admin = false
+      and u.is_deleted = false
+      and u.status = 'Hoạt động'
+      and not (u.username = any($1::text[]))
+    order by u.full_name
+  `, [usernames]);
+  return {
+    accounts: accounts.rows.map((account) => ({
+      ...account,
+      assets: assets.rows.filter((asset) => String(asset.manager_user_id) === String(account.id))
+    })),
+    assets: assets.rows,
+    eligibleRecipients: eligibleRecipients.rows
+  };
+}
+
+app.post('/api/accounts/deletion-check', asyncHandler(async (req, res) => {
+  if (getActor(req) !== 'admin') {
+    res.status(403).json({ error: 'Chỉ Admin được xóa tài khoản' });
+    return;
+  }
+  const usernames = normalizeDeletionUsernames(req.body?.usernames);
+  if (!usernames.length) {
+    res.status(400).json({ error: 'Chưa chọn tài khoản hợp lệ để xóa' });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    const impact = await getAccountDeletionImpact(client, usernames);
+    res.json({
+      usernames,
+      accounts: impact.accounts,
+      assetCount: impact.assets.length,
+      requiresTransfer: impact.assets.length > 0,
+      eligibleRecipients: impact.eligibleRecipients
+    });
+  } finally {
+    client.release();
+  }
+}));
+
 app.delete('/api/accounts', asyncHandler(async (req, res) => {
-  const usernames = Array.isArray(req.body?.usernames) ? req.body.usernames : [];
-  const filtered = usernames.map((item) => String(item).trim()).filter((item) => item && item !== 'admin');
+  if (getActor(req) !== 'admin') {
+    res.status(403).json({ error: 'Chỉ Admin được xóa tài khoản' });
+    return;
+  }
+  const filtered = normalizeDeletionUsernames(req.body?.usernames);
+  const transferToUsername = String(req.body?.transferToUsername || '').trim();
   if (!filtered.length) {
     res.status(400).json({ error: 'Chưa chọn tài khoản hợp lệ để xóa' });
     return;
   }
-  const result = await pool.query(
-    `
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const lockedUsers = await client.query(`
+      select id, username, full_name
+      from users
+      where username = any($1::text[])
+        and is_admin = false
+        and is_deleted = false
+      for update
+    `, [filtered]);
+    if (!lockedUsers.rows.length) {
+      await client.query('rollback');
+      res.status(404).json({ error: 'Không tìm thấy tài khoản cần xóa' });
+      return;
+    }
+    const deletingUsernames = lockedUsers.rows.map((row) => row.username);
+    const impact = await getAccountDeletionImpact(client, deletingUsernames);
+    let transferTarget = null;
+    if (impact.assets.length) {
+      if (!transferToUsername) {
+        await client.query('rollback');
+        res.status(409).json({
+          error: 'Tài khoản đang được bàn giao tài sản. Vui lòng chọn tài khoản nhận bàn giao trước khi xóa.',
+          code: 'ASSET_TRANSFER_REQUIRED',
+          assetCount: impact.assets.length,
+          accounts: impact.accounts,
+          eligibleRecipients: impact.eligibleRecipients
+        });
+        return;
+      }
+      const targetResult = await client.query(`
+        select id, username, full_name, team_id
+        from users
+        where username = $1
+          and is_admin = false
+          and is_deleted = false
+          and status = 'Hoạt động'
+          and not (username = any($2::text[]))
+        for update
+      `, [transferToUsername, deletingUsernames]);
+      if (!targetResult.rows.length) {
+        await client.query('rollback');
+        res.status(400).json({ error: 'Tài khoản nhận bàn giao không hợp lệ hoặc đang bị xóa' });
+        return;
+      }
+      transferTarget = targetResult.rows[0];
+      const deletedUserIds = lockedUsers.rows.map((row) => row.id);
+      const transferredAssets = await client.query(`
+        update assets
+        set
+          manager_user_id = $1,
+          team_id = coalesce($2, team_id),
+          updated_at = now()
+        where manager_user_id = any($3::bigint[])
+        returning id, asset_code, name
+      `, [transferTarget.id, transferTarget.team_id, deletedUserIds]);
+      await client.query(`
+        update asset_assignments
+        set returned_at = current_date
+        where assigned_to_user_id = any($1::bigint[])
+          and returned_at is null
+      `, [deletedUserIds]);
+      if (transferredAssets.rows.length) {
+        await client.query(`
+          insert into asset_assignments (
+            asset_id, assigned_to_user_id, assigned_to_team_id, assigned_at, note
+          )
+          select
+            transferred.id,
+            $1,
+            $2,
+            current_date,
+            $3
+          from unnest($4::bigint[]) as transferred(id)
+        `, [
+          transferTarget.id,
+          transferTarget.team_id,
+          `Chuyển tài sản khi xóa tài khoản: ${deletingUsernames.join(', ')}`,
+          transferredAssets.rows.map((row) => row.id)
+        ]);
+      }
+      await client.query(`
+        update handover_recipients
+        set
+          manager_user_id = $1,
+          team_id = coalesce($2, team_id),
+          updated_at = now()
+        where manager_user_id = any($3::bigint[])
+      `, [transferTarget.id, transferTarget.team_id, deletedUserIds]);
+    }
+    const result = await client.query(`
       update users
       set is_deleted = true, updated_at = now()
       where username = any($1::text[])
         and is_admin = false
         and is_deleted = false
       returning username
-    `,
-    [filtered]
-  );
-  await logActivity(req, {
-    action: 'Xóa tài khoản',
-    moduleKey: 'permissions',
-    moduleName: 'Hệ thống & Phân quyền',
-    detail: `Xóa mềm ${result.rows.length} tài khoản`,
-    metadata: { usernames: result.rows.map((row) => row.username) }
-  });
-  res.json({ ok: true, deleted: result.rows.map((row) => row.username) });
+    `, [deletingUsernames]);
+    await logActivity(req, {
+      action: transferTarget ? 'Chuyển tài sản và xóa tài khoản' : 'Xóa tài khoản',
+      moduleKey: 'permissions',
+      moduleName: 'Hệ thống & Phân quyền',
+      detail: transferTarget
+        ? `Chuyển ${impact.assets.length} tài sản sang ${transferTarget.username} và xóa mềm ${result.rows.length} tài khoản`
+        : `Xóa mềm ${result.rows.length} tài khoản`,
+      metadata: {
+        usernames: result.rows.map((row) => row.username),
+        transferredAssetCodes: impact.assets.map((asset) => asset.asset_code),
+        transferToUsername: transferTarget?.username || null
+      }
+    }, client);
+    await client.query('commit');
+    res.json({
+      ok: true,
+      deleted: result.rows.map((row) => row.username),
+      transferredAssetCount: impact.assets.length,
+      transferToUsername: transferTarget?.username || null
+    });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
 }));
 
 app.get('/api/modules', asyncHandler(async (_req, res) => {
@@ -734,19 +1125,12 @@ app.post('/api/modules', asyncHandler(async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('begin');
-    const permissionName = String(name).trim().toLowerCase().startsWith('quản lý')
-      ? String(name).trim()
-      : `Quản lý ${String(name).toLowerCase()}`;
     const inserted = await client.query(`
       insert into modules (module_key, name, description, icon, visible, is_admin_only, is_custom)
       values ($1, $2, $3, $4, $5, $6, true)
       returning id, module_key
     `, [moduleKey, name, description, icon, Boolean(visible), Boolean(isAdminOnly)]);
-    await client.query(`
-      insert into permissions (module_id, name)
-      values ($1, $2)
-      on conflict (name) do nothing
-    `, [inserted.rows[0].id, permissionName]);
+    await syncModulePermissions(client);
     await logActivity(req, {
       action: 'Tạo module',
       moduleKey: 'moduleManager',
@@ -771,34 +1155,50 @@ app.post('/api/modules', asyncHandler(async (req, res) => {
 app.put('/api/modules/:moduleKey', asyncHandler(async (req, res) => {
   const { moduleKey } = req.params;
   const { name, description, visible, icon } = req.body;
-  const result = await pool.query(`
-    update modules
-    set
-      name = coalesce($2, name),
-      description = coalesce($3, description),
-      icon = coalesce($4, icon),
-      visible = coalesce($5, visible)
-    where module_key = $1
-    returning module_key
-  `, [
-    moduleKey,
-    name ?? null,
-    description ?? null,
-    icon ?? null,
-    typeof visible === 'boolean' ? visible : null
-  ]);
-  if (!result.rows.length) {
-    res.status(404).json({ error: 'Không tìm thấy module' });
-    return;
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`
+      update modules
+      set
+        name = coalesce($2, name),
+        description = coalesce($3, description),
+        icon = coalesce($4, icon),
+        visible = coalesce($5, visible)
+      where module_key = $1
+      returning id, module_key, name
+    `, [
+      moduleKey,
+      name ?? null,
+      description ?? null,
+      icon ?? null,
+      typeof visible === 'boolean' ? visible : null
+    ]);
+    if (!result.rows.length) {
+      await client.query('rollback');
+      res.status(404).json({ error: 'Không tìm thấy module' });
+      return;
+    }
+    await syncModulePermissions(client);
+    await logActivity(req, {
+      action: 'Cập nhật module',
+      moduleKey: 'moduleManager',
+      moduleName: 'Quản lý module',
+      detail: `Cập nhật module ${moduleKey}`,
+      metadata: { moduleKey, name, description, visible, icon }
+    }, client);
+    await client.query('commit');
+    res.json({ ok: true });
+  } catch (error) {
+    await client.query('rollback');
+    if (error.code === '23505') {
+      res.status(409).json({ error: 'Tên module đã được sử dụng' });
+      return;
+    }
+    throw error;
+  } finally {
+    client.release();
   }
-  await logActivity(req, {
-    action: 'Cập nhật module',
-    moduleKey: 'moduleManager',
-    moduleName: 'Quản lý module',
-    detail: `Cập nhật module ${moduleKey}`,
-    metadata: { moduleKey, name, description, visible, icon }
-  });
-  res.json({ ok: true });
 }));
 
 app.delete('/api/modules/:moduleKey', asyncHandler(async (req, res) => {
@@ -838,8 +1238,9 @@ app.get('/api/permissions', asyncHandler(async (_req, res) => {
       p.name,
       m.module_key
     from permissions p
-    left join modules m on m.id = p.module_id
-    order by p.id
+    join modules m on m.id = p.module_id
+    where m.module_key not in ('permissions', 'staff')
+    order by m.id
   `);
   res.json(rows);
 }));
@@ -1270,6 +1671,7 @@ app.get('/api/staff', asyncHandler(async (_req, res) => {
       coalesce(r.name, '') as rank,
       coalesce(pos.name, '') as position,
       coalesce(t.name, '') as team,
+      sp.badge_number,
       sp.birth_date,
       sp.gender,
       sp.ethnicity,
@@ -1308,6 +1710,7 @@ app.put('/api/staff/:username', asyncHandler(async (req, res) => {
   const education = sections['Trình độ đào tạo'] || {};
   const other = sections['Thông tin khác'] || {};
   const fullname = toNullableText(personal['Họ và tên']);
+  const badgeNumber = toNullableText(personal['Số hiệu']);
   const phone = toNullableText(other['Số điện thoại'] || personal['Số điện thoại']);
 
   const client = await pool.connect();
@@ -1336,14 +1739,15 @@ app.put('/api/staff/:username', asyncHandler(async (req, res) => {
     `, [userId, fullname, phone, rankId, positionId, teamId]);
     await client.query(`
       insert into staff_profiles (
-        user_id, birth_date, gender, ethnicity, citizen_id, citizen_issued_date,
+        user_id, badge_number, birth_date, gender, ethnicity, citizen_id, citizen_issued_date,
         permanent_address, current_address, joined_date, education_level,
         school_name, major, graduation_year, training_type, foreign_language,
         marital_status, email, note, avatar_url
       )
-      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+      values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
       on conflict (user_id) do update
       set
+        badge_number = excluded.badge_number,
         birth_date = excluded.birth_date,
         gender = excluded.gender,
         ethnicity = excluded.ethnicity,
@@ -1365,6 +1769,7 @@ app.put('/api/staff/:username', asyncHandler(async (req, res) => {
         updated_at = now()
     `, [
       userId,
+      badgeNumber,
       toDbDate(personal['Ngày sinh']),
       toNullableText(personal['Giới tính']),
       toNullableText(personal['Dân tộc']),
@@ -1548,9 +1953,8 @@ app.get('/api/handover-recipients', asyncHandler(async (req, res) => {
       join assets a on a.id = hra.asset_id
       where h.recipient_id = r.id
     ) asset_codes on true
-    where ($1::boolean = true or r.team_id = $2)
     order by t.name nulls last, r.full_name
-  `, [actor.is_admin, actor.team_id]);
+  `);
     res.json(result.rows);
   } finally {
     client.release();
@@ -1579,17 +1983,11 @@ app.post('/api/handover-recipients', asyncHandler(async (req, res) => {
       res.status(401).json({ error: 'Tài khoản không hợp lệ' });
       return;
     }
-    let teamId;
-    if (actor.is_admin) {
-      teamId = await resolveTeamIdForAccount(client, { team: unit });
-    } else {
-      if (!actor.team_id) {
-        await client.query('rollback');
-        res.status(403).json({ error: 'Tài khoản chưa được Admin phân đơn vị' });
-        return;
-      }
-      teamId = actor.team_id;
-      unit = actor.team;
+    const teamId = await resolveTeamIdForAccount(client, { team: unit });
+    if (!teamId) {
+      await client.query('rollback');
+      res.status(400).json({ error: 'Đội/Trạm bàn giao không hợp lệ' });
+      return;
     }
     const validAssets = await client.query(`
       select asset_code

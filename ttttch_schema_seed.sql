@@ -95,6 +95,7 @@ CREATE TABLE user_permissions (
 CREATE TABLE staff_profiles (
   id BIGSERIAL PRIMARY KEY,
   user_id BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  badge_number TEXT,
   birth_date DATE,
   gender TEXT,
   ethnicity TEXT,
@@ -225,6 +226,8 @@ CREATE INDEX idx_assets_category_id ON assets(category_id);
 CREATE INDEX idx_assets_status ON assets(status);
 CREATE INDEX idx_assets_manager_user_id ON assets(manager_user_id);
 CREATE INDEX idx_assets_team_id ON assets(team_id);
+CREATE INDEX idx_asset_assignments_asset ON asset_assignments(asset_id);
+CREATE INDEX idx_asset_assignments_user ON asset_assignments(assigned_to_user_id);
 CREATE INDEX idx_staff_profiles_user_id ON staff_profiles(user_id);
 CREATE INDEX idx_inventory_sessions_date ON inventory_sessions(inventory_date DESC, id DESC);
 CREATE INDEX idx_inventory_items_session ON inventory_items(session_id);
@@ -278,8 +281,10 @@ INSERT INTO modules (module_key, name, description, icon, visible, is_admin_only
   ('moduleManager', 'Quản lý module', 'Thiết lập module được hiển thị cho tài khoản cán bộ', 'layout-dashboard', true, true, false),
   ('assetCategoryManager', 'Danh mục tài sản', 'Quản lý loại tài sản và theo dõi trạng thái thiết bị', 'boxes', true, true, false),
   ('reports', 'Báo cáo', 'Thống kê thiết bị và tình hình bàn giao theo đội', 'chart-column', true, true, false),
+  ('activityLog', 'Log lịch sử', 'Theo dõi toàn bộ quá trình sử dụng và thay đổi dữ liệu của tài khoản', 'history', true, true, false),
   ('staff', 'Hồ sơ Cán bộ', 'Cho phép cán bộ xem và cập nhật hồ sơ cá nhân', 'id-card', true, false, false),
-  ('assets', 'Quản lý Tài sản', 'Cho phép xem tài sản được bàn giao', 'package-check', true, false, false);
+  ('assets', 'Quản lý Tài sản', 'Cho phép xem tài sản được bàn giao', 'package-check', true, false, false),
+  ('settings', 'Cài đặt', 'Tùy biến chế độ hiển thị, màu nhấn và mật độ giao diện', 'settings', true, false, false);
 
 INSERT INTO permissions (module_id, name) VALUES
   ((SELECT id FROM modules WHERE module_key = 'permissions'), 'Quản lý hệ thống'),
@@ -287,11 +292,13 @@ INSERT INTO permissions (module_id, name) VALUES
   ((SELECT id FROM modules WHERE module_key = 'catalogManager'), 'Quản lý danh mục'),
   ((SELECT id FROM modules WHERE module_key = 'teamManager'), 'Quản lý đơn vị'),
   ((SELECT id FROM modules WHERE module_key = 'moduleManager'), 'Quản lý module'),
-  ((SELECT id FROM modules WHERE module_key = 'assetCategoryManager'), 'Quản lý danh mục tài sản'),
+  ((SELECT id FROM modules WHERE module_key = 'assetCategoryManager'), 'Danh mục tài sản'),
   ((SELECT id FROM modules WHERE module_key = 'staff'), 'Quản lý hồ sơ cán bộ'),
-  ((SELECT id FROM modules WHERE module_key = 'assets'), 'Quản lý tài sản'),
+  ((SELECT id FROM modules WHERE module_key = 'assets'), 'Quản lý Tài sản'),
   ((SELECT id FROM modules WHERE module_key = 'permissions'), 'Quản lý phân quyền phần mềm'),
-  ((SELECT id FROM modules WHERE module_key = 'reports'), 'Báo cáo thống kê'),
+  ((SELECT id FROM modules WHERE module_key = 'reports'), 'Báo cáo'),
+  ((SELECT id FROM modules WHERE module_key = 'activityLog'), 'Log lịch sử'),
+  ((SELECT id FROM modules WHERE module_key = 'settings'), 'Cài đặt'),
   (NULL, 'Xuất dữ liệu');
 
 INSERT INTO user_permissions (user_id, permission_id)
@@ -319,17 +326,17 @@ JOIN permissions p ON p.name IN ('Quản lý tài sản')
 WHERE u.username = 'levanc';
 
 INSERT INTO staff_profiles (
-  user_id, birth_date, gender, ethnicity, citizen_id, citizen_issued_date,
+  user_id, badge_number, birth_date, gender, ethnicity, citizen_id, citizen_issued_date,
   permanent_address, current_address, joined_date, education_level, school_name,
   major, graduation_year, training_type, foreign_language, marital_status, email, note
 ) VALUES
-  ((SELECT id FROM users WHERE username = 'nguyenvana'), '1992-03-12', 'Nam', 'Kinh', '001092000001', '2021-04-20',
+  ((SELECT id FROM users WHERE username = 'nguyenvana'), 'CB001', '1992-03-12', 'Nam', 'Kinh', '001092000001', '2021-04-20',
    'Hà Nội', 'Hà Nội', '2014-08-15', 'Đại học', 'Học viện Kỹ thuật mật mã',
    'Công nghệ thông tin', 2014, 'Chính quy', 'Tiếng Anh B1', 'Đã kết hôn', 'nguyenvana@example.local', 'Cán bộ phụ trách thiết bị CNTT'),
-  ((SELECT id FROM users WHERE username = 'tranthib'), '1990-11-08', 'Nữ', 'Kinh', '001090000002', '2020-05-12',
+  ((SELECT id FROM users WHERE username = 'tranthib'), 'CB002', '1990-11-08', 'Nữ', 'Kinh', '001090000002', '2020-05-12',
    'TP Hồ Chí Minh', 'TP Hồ Chí Minh', '2012-09-03', 'Đại học', 'Đại học An ninh nhân dân',
    'An toàn thông tin', 2012, 'Chính quy', 'Tiếng Anh B2', 'Độc thân', 'tranthib@example.local', 'Phụ trách điều phối đội'),
-  ((SELECT id FROM users WHERE username = 'levanc'), '1995-07-17', 'Nam', 'Kinh', '001095000003', '2022-06-06',
+  ((SELECT id FROM users WHERE username = 'levanc'), 'CB003', '1995-07-17', 'Nam', 'Kinh', '001095000003', '2022-06-06',
    'Đà Nẵng', 'Đà Nẵng', '2018-10-10', 'Đại học', 'Học viện Cảnh sát nhân dân',
    'Quản lý hành chính', 2018, 'Chính quy', 'Tiếng Anh B1', 'Đã kết hôn', 'levanc@example.local', 'Tài khoản đang tạm khóa');
 
