@@ -776,7 +776,7 @@ th{
 .log-user svg,
 .log-action svg{width:15px;height:15px}
 .grid.two{display:grid;grid-template-columns:320px minmax(0,1fr);gap:20px}
-.catalog-grid{
+.grid.two.catalog-grid{
   grid-template-columns:repeat(2,minmax(0,1fr));
   gap:18px;
   align-items:start;
@@ -1291,6 +1291,7 @@ th{
   overflow-wrap:anywhere;
 }
 .catalog-panel{
+  min-width:0;
   background:
     linear-gradient(135deg,rgba(185,28,28,.045),transparent 44%),
     var(--surface);
@@ -1312,7 +1313,7 @@ th{
 }
 .catalog-panel .inline-add{
   display:grid;
-  grid-template-columns:minmax(220px,1fr) auto;
+  grid-template-columns:minmax(0,1fr) auto;
   gap:10px;
   padding:12px;
   margin-top:14px;
@@ -1322,7 +1323,7 @@ th{
 }
 .catalog-item{
   display:grid;
-  grid-template-columns:22px 42px minmax(180px,1fr) auto;
+  grid-template-columns:22px 42px minmax(0,1fr) auto;
   align-items:center;
   gap:12px;
   padding:12px;
