@@ -22,6 +22,26 @@ PORT=3000
 
 Khi chuyển sang server PostgreSQL mới, chỉ cần đổi `DATABASE_URL` sang thông tin database do bên server cung cấp.
 
+Khi deploy trên Render hoặc server production, cần cấu hình biến môi trường:
+
+```env
+NODE_ENV=production
+DATABASE_URL=postgres://ten_user:mat_khau@dia_chi_server:5432/ten_database
+PORT=10000
+```
+
+Nếu PostgreSQL server bắt buộc SSL, giữ mặc định production hoặc thêm:
+
+```env
+PGSSLMODE=require
+```
+
+Nếu PostgreSQL server nội bộ không dùng SSL, thêm:
+
+```env
+PGSSLMODE=disable
+```
+
 ## Dựng database server mới
 Nếu cần dựng hệ thống mới ổn định, không mang theo dữ liệu test, dùng file:
 
