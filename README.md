@@ -65,8 +65,6 @@ admin / 123456
 
 Sau khi đăng nhập lần đầu nên đổi mật khẩu admin ngay.
 
-File `ttttch_schema_seed.sql` chỉ dùng cho môi trường demo/test vì có dữ liệu mẫu.
-
 ## Cấu trúc
 - `index.html`: giao diện chính
 - `assets/css/style.css`: style/responsive
@@ -74,7 +72,6 @@ File `ttttch_schema_seed.sql` chỉ dùng cho môi trường demo/test vì có d
 - `server/index.js`: API nghiệp vụ
 - `server/db.js`: cấu hình kết nối PostgreSQL
 - `ttttch_production_bootstrap.sql`: dựng database mới cho môi trường thật
-- `ttttch_schema_seed.sql`: dựng database demo có dữ liệu mẫu
 
 ## Chức năng đã dựng
 - Màn hình đăng nhập theo tài khoản mẫu
