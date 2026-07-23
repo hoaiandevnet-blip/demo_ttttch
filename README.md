@@ -2,8 +2,50 @@
 
 Bản web app mô phỏng theo video demo: hệ thống quản trị tài khoản, phân quyền, hồ sơ cán bộ và quản lý tài sản.
 
-## Cách chạy
-Chạy server Node.js:
+## Cách chạy bằng Docker
+Ứng dụng có thể chạy bằng Docker Compose gồm 2 container:
+
+- `ttttch-app`: web app Node.js 24 LTS
+- `ttttch-postgres`: PostgreSQL chạy trong Docker
+
+Ở lần chạy đầu tiên, PostgreSQL Docker sẽ tự nạp file `ttttch_production_bootstrap.sql` để tạo bảng, module, quyền và tài khoản admin mặc định.
+
+Chạy lần đầu:
+
+```bash
+docker compose up --build
+```
+
+Mở phần mềm tại:
+
+```text
+http://127.0.0.1:3000/
+```
+
+PostgreSQL trong Docker được mở ra máy Mac tại port `5433`, dùng khi cần kết nối DBeaver:
+
+```text
+Host: 127.0.0.1
+Port: 5433
+Database: ttttch_demo
+User: ttttch
+Password: ttttch_password
+```
+
+Tắt hệ thống Docker:
+
+```bash
+docker compose down
+```
+
+Xóa luôn dữ liệu database Docker để dựng lại từ đầu:
+
+```bash
+docker compose down -v
+```
+
+## Cách chạy không dùng Docker
+Chạy server Node.js trực tiếp:
 
 ```bash
 npm install

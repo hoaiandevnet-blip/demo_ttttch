@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: ttttch-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ttttch_demo
+      POSTGRES_USER: ttttch
+      POSTGRES_PASSWORD: ttttch_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - ttttch_postgres_data:/var/lib/postgresql/data
+      - ./ttttch_production_bootstrap.sql:/docker-entrypoint-initdb.d/01-ttttch-bootstrap.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ttttch -d ttttch_demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: .
+    container_name: ttttch-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://ttttch:ttttch_password@db:5432/ttttch_demo
+      PGSSLMODE: disable
+    ports:
+      - "3000:3000"
+
+volumes:
+  ttttch_postgres_data:
