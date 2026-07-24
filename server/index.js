@@ -10,6 +10,39 @@ const __dirname = path.dirname(__filename);
 const appRoot = path.resolve(__dirname, '..');
 const app = express();
 const port = Number(process.env.PORT || 3000);
+const handoverFileMaxBytes = 6 * 1024 * 1024;
+const avatarFileMaxBytes = 2 * 1024 * 1024;
+const allowedHandoverFiles = new Map([
+  ['.doc', {
+    types: ['application/msword', 'application/octet-stream'],
+    signature: (buffer) => buffer.subarray(0, 8).equals(Buffer.from('d0cf11e0a1b11ae1', 'hex'))
+  }],
+  ['.docx', {
+    types: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/zip', 'application/octet-stream'],
+    signature: (buffer) => buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b
+  }],
+  ['.png', {
+    types: ['image/png'],
+    signature: (buffer) => buffer.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+  }],
+  ['.jpg', {
+    types: ['image/jpeg'],
+    signature: (buffer) => buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff
+  }],
+  ['.jpeg', {
+    types: ['image/jpeg'],
+    signature: (buffer) => buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff
+  }],
+  ['.webp', {
+    types: ['image/webp'],
+    signature: (buffer) => buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  }]
+]);
+const allowedAvatarTypes = new Map([
+  ['image/png', allowedHandoverFiles.get('.png').signature],
+  ['image/jpeg', allowedHandoverFiles.get('.jpg').signature],
+  ['image/webp', allowedHandoverFiles.get('.webp').signature]
+]);
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(appRoot));
@@ -43,6 +76,74 @@ function isValidUsername(value) {
 
 function sendUsernameError(res) {
   res.status(400).json({ error: 'Tên đăng nhập chỉ dùng chữ thường không dấu, số, dấu chấm, gạch dưới hoặc gạch ngang, dài 3-32 ký tự' });
+}
+
+function validateHandoverFile({ fileName, fileType, fileData }) {
+  const name = String(fileName || '').trim();
+  const type = String(fileType || '').split(';')[0].trim().toLowerCase();
+  const dataUrl = String(fileData || '').trim();
+  if (!name && !dataUrl) return { fileName: null, fileType: null, fileData: null };
+  if (!name || !dataUrl) {
+    return { error: 'Thông tin file biên bản không đầy đủ' };
+  }
+  if (name.length > 180 || /[\\/:\0]/.test(name)) {
+    return { error: 'Tên file biên bản không hợp lệ' };
+  }
+  const ext = path.extname(name).toLowerCase();
+  const policy = allowedHandoverFiles.get(ext);
+  if (!policy) {
+    return { error: 'File biên bản chỉ hỗ trợ .doc, .docx, .png, .jpg, .jpeg hoặc .webp' };
+  }
+  const match = dataUrl.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/);
+  if (!match) {
+    return { error: 'Dữ liệu file biên bản không đúng định dạng base64' };
+  }
+  const dataType = match[1].trim().toLowerCase();
+  const base64 = match[2].replace(/\s+/g, '');
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(base64) || base64.length % 4 !== 0) {
+    return { error: 'Dữ liệu file biên bản không hợp lệ' };
+  }
+  if (!policy.types.includes(dataType) || (type && !policy.types.includes(type))) {
+    return { error: 'Loại file biên bản không khớp danh sách cho phép' };
+  }
+  const buffer = Buffer.from(base64, 'base64');
+  if (!buffer.length || buffer.length > handoverFileMaxBytes) {
+    return { error: 'File biên bản vượt quá dung lượng cho phép 6 MB', status: 413 };
+  }
+  if (!policy.signature(buffer)) {
+    return { error: 'Nội dung file biên bản không đúng định dạng khai báo' };
+  }
+  return {
+    fileName: name,
+    fileType: dataType,
+    fileData: `data:${dataType};base64,${base64}`
+  };
+}
+
+function validateAvatarPhoto(photo) {
+  const dataUrl = String(photo || '').trim();
+  if (!dataUrl) return { photo: null };
+  const match = dataUrl.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/);
+  if (!match) {
+    return { error: 'Ảnh hồ sơ không đúng định dạng base64' };
+  }
+  const dataType = match[1].trim().toLowerCase();
+  const signature = allowedAvatarTypes.get(dataType);
+  if (!signature) {
+    return { error: 'Ảnh hồ sơ chỉ hỗ trợ .png, .jpg, .jpeg hoặc .webp' };
+  }
+  const base64 = match[2].replace(/\s+/g, '');
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(base64) || base64.length % 4 !== 0) {
+    return { error: 'Dữ liệu ảnh hồ sơ không hợp lệ' };
+  }
+  const buffer = Buffer.from(base64, 'base64');
+  if (!buffer.length || buffer.length > avatarFileMaxBytes) {
+    return { error: 'Ảnh hồ sơ vượt quá dung lượng cho phép 2 MB', status: 413 };
+  }
+  if (!signature(buffer)) {
+    return { error: 'Nội dung ảnh hồ sơ không đúng định dạng khai báo' };
+  }
+  return { photo: `data:${dataType};base64,${base64}` };
 }
 
 function getActor(req) {
@@ -1705,6 +1806,11 @@ app.put('/api/staff/:username', asyncHandler(async (req, res) => {
   const { username } = req.params;
   const sections = req.body?.sections || {};
   const photo = req.body?.photo || '';
+  const photoValidation = validateAvatarPhoto(photo);
+  if (photoValidation.error) {
+    res.status(photoValidation.status || 400).json({ error: photoValidation.error });
+    return;
+  }
   const personal = sections['Thông tin cá nhân'] || {};
   const work = sections['Thông tin công tác'] || {};
   const education = sections['Trình độ đào tạo'] || {};
@@ -1787,7 +1893,7 @@ app.put('/api/staff/:username', asyncHandler(async (req, res) => {
       toNullableText(other['Tình trạng hôn nhân']),
       toNullableText(other['Email']),
       toNullableText(other['Ghi chú']),
-      toNullableText(photo)
+      photoValidation.photo
     ]);
     await logActivity(req, {
       action: 'Cập nhật hồ sơ cán bộ',
@@ -1965,13 +2071,17 @@ app.post('/api/handover-recipients', asyncHandler(async (req, res) => {
   const name = String(req.body?.name || req.body?.fullName || '').trim();
   let unit = String(req.body?.unit || req.body?.team || '').trim();
   const assetIds = Array.isArray(req.body?.assetIds) ? req.body.assetIds.map((item) => String(item).trim()).filter(Boolean) : [];
-  const fileData = String(req.body?.fileData || req.body?.file_data || '');
+  const fileValidation = validateHandoverFile({
+    fileName: req.body?.fileName || req.body?.file_name,
+    fileType: req.body?.fileType || req.body?.file_type,
+    fileData: req.body?.fileData || req.body?.file_data
+  });
   if (!name || !unit || !assetIds.length) {
     res.status(400).json({ error: 'Thiếu họ tên, đơn vị hoặc thiết bị bàn giao' });
     return;
   }
-  if (fileData.length > 9 * 1024 * 1024) {
-    res.status(413).json({ error: 'File biên bản vượt quá dung lượng cho phép' });
+  if (fileValidation.error) {
+    res.status(fileValidation.status || 400).json({ error: fileValidation.error });
     return;
   }
   const client = await pool.connect();
@@ -2022,9 +2132,9 @@ app.post('/api/handover-recipients', asyncHandler(async (req, res) => {
       toNullableText(req.body?.handoverNo || req.body?.handover_no),
       toDbDate(req.body?.handoverDate || req.body?.handover_date) || new Date().toISOString().slice(0, 10),
       toNullableText(req.body?.note),
-      toNullableText(req.body?.fileName || req.body?.file_name),
-      toNullableText(req.body?.fileType || req.body?.file_type),
-      toNullableText(fileData)
+      fileValidation.fileName,
+      fileValidation.fileType,
+      fileValidation.fileData
     ]);
     if (assetIds.length) {
       await client.query(`

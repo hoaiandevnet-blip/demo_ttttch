@@ -95,6 +95,11 @@ const catalogs={
 };
 const assetTabs=['Thu hồi/Tiếp nhận','Danh sách tài sản','Danh sách bàn giao','Lập mới tài sản','Kiểm kê'];
 const assetPanels=['assetReceive','assetList','assetHandoverList','assetAdd','assetCheck'];
+const uploadPolicies={
+ excel:{extensions:['.xlsx','.xls'],maxBytes:5*1024*1024,mimes:['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','application/vnd.ms-excel','application/octet-stream']},
+ avatar:{extensions:['.png','.jpg','.jpeg','.webp'],maxBytes:2*1024*1024,mimes:['image/png','image/jpeg','image/webp']},
+ handover:{extensions:['.doc','.docx','.png','.jpg','.jpeg','.webp'],maxBytes:6*1024*1024,mimes:['application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/zip','application/octet-stream','image/png','image/jpeg','image/webp']}
+};
 const sessionUserKey='ttttchCurrentUser';
 let currentUser=null;
 let selectedRole='admin';
@@ -991,6 +996,7 @@ function openAccountImport(){
 function importAccountsFromExcel(event){
  const file=event.target.files[0];
  if(!file)return;
+ if(!validateUploadFile(file,uploadPolicies.excel,'File Excel tài khoản'))return;
  if(!window.XLSX){toast('Chưa tải được thư viện Excel');return}
  const reader=new FileReader();
  reader.onload=async ()=>{
@@ -1069,9 +1075,31 @@ function normalizeExcelDateValue(value){
  if(typeof value === 'number' && window.XLSX?.SSF)return XLSX.SSF.format('dd/mm/yyyy',value);
  return String(value).trim();
 }
+function getFileExtension(fileName){
+ return String(fileName||'').toLowerCase().match(/\.[^.]+$/)?.[0]||'';
+}
+function validateUploadFile(file,policy,label){
+ if(!file)return false;
+ const extension=getFileExtension(file.name);
+ const mime=String(file.type||'application/octet-stream').toLowerCase();
+ if(!policy.extensions.includes(extension)){
+  toast(`${label} chỉ hỗ trợ: ${policy.extensions.join(', ')}`);
+  return false;
+ }
+ if(policy.mimes.length && !policy.mimes.includes(mime)){
+  toast(`${label} không đúng loại file cho phép`);
+  return false;
+ }
+ if(file.size>policy.maxBytes){
+  toast(`${label} vượt quá dung lượng cho phép ${Math.round(policy.maxBytes/1024/1024)} MB`);
+  return false;
+ }
+ return true;
+}
 function importAssetsFromExcel(event){
  const file=event.target.files[0];
  if(!file)return;
+ if(!validateUploadFile(file,uploadPolicies.excel,'File Excel tài sản'))return;
  if(!window.XLSX){toast('Chưa tải được thư viện Excel');return}
  const reader=new FileReader();
  reader.onload=async ()=>{
@@ -1367,7 +1395,7 @@ function uploadAvatar(){
 function handleAvatarFile(){
  const file=$('#avatarInput').files[0];
  if(!file)return;
- if(!file.type.startsWith('image/')){toast('Vui lòng chọn file ảnh');return}
+ if(!validateUploadFile(file,uploadPolicies.avatar,'Ảnh hồ sơ'))return;
  const reader=new FileReader();
  reader.onload=()=>{staffAvatarSrc=reader.result;if(currentUser && currentUser.u!=='admin'){getStaffProfile(currentUser.u).photo=staffAvatarSrc}renderAvatar();renderStaffDirectory();toast('Đã tải ảnh hồ sơ')};
  reader.readAsDataURL(file);
@@ -2506,16 +2534,7 @@ function removeSelectedHandoverAsset(assetId){
 function readHandoverFile(){
  const file=$('#handoverFile')?.files?.[0];
  if(!file)return Promise.resolve({fileName:'',fileType:'',fileData:''});
- const isWord=/\.(doc|docx)$/i.test(file.name);
- const isImage=file.type.startsWith('image/');
- if(!isWord && !isImage){
-  toast('Chỉ hỗ trợ file Word hoặc hình ảnh');
-  return Promise.reject(new Error('Định dạng biên bản không hợp lệ'));
- }
- if(file.size>6*1024*1024){
-  toast('File biên bản không được lớn hơn 6 MB');
-  return Promise.reject(new Error('File biên bản vượt quá dung lượng cho phép'));
- }
+ if(!validateUploadFile(file,uploadPolicies.handover,'File biên bản'))return Promise.reject(new Error('File biên bản không hợp lệ'));
  return new Promise((resolve,reject)=>{
   const reader=new FileReader();
   reader.onload=()=>resolve({fileName:file.name,fileType:file.type||'application/octet-stream',fileData:String(reader.result||'')});

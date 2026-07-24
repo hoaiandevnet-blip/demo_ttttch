@@ -44,6 +44,15 @@ Xóa luôn dữ liệu database Docker để dựng lại từ đầu:
 docker compose down -v
 ```
 
+## Chính sách upload file
+Hệ thống giới hạn file tải lên theo từng nghiệp vụ:
+
+- Biên bản bàn giao: chỉ nhận `.doc`, `.docx`, `.png`, `.jpg`, `.jpeg`, `.webp`, tối đa 6 MB.
+- Ảnh hồ sơ cán bộ: chỉ nhận `.png`, `.jpg`, `.jpeg`, `.webp`, tối đa 2 MB.
+- File Excel nhập nhanh: chỉ nhận `.xlsx`, `.xls`, tối đa 5 MB.
+
+Server kiểm tra tên file, đuôi file, MIME, dung lượng và chữ ký file trước khi lưu. Client cũng kiểm tra trước để báo lỗi sớm cho người dùng.
+
 ## Cách chạy không dùng Docker
 Chạy server Node.js trực tiếp:
 
